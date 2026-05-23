@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Environment — contains API keys, never commit
+.env
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp

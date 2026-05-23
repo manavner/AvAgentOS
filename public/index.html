@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AvAgentOS — Mission Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=JetBrains+Mono:wght@300;400;500;700&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="bg-canvas"></canvas>
+  <div id="scanline"></div>
+
+  <!-- TOP BAR -->
+  <header id="topbar">
+    <div class="tb-left">
+      <div class="logo">
+        <span class="logo-av">AV</span><span class="logo-agent">AGENT</span><span class="logo-os">OS</span>
+      </div>
+      <div class="logo-sub">MISSION CONTROL</div>
+    </div>
+    <div class="tb-center">
+      <div class="sys-metric" id="metric-agents">
+        <span class="metric-val" id="val-agents">1</span>
+        <span class="metric-label">AGENTS</span>
+      </div>
+      <div class="sys-metric" id="metric-online">
+        <span class="metric-val" id="val-online">0</span>
+        <span class="metric-label">ONLINE</span>
+      </div>
+      <div class="sys-metric">
+        <span class="metric-val" id="val-msgs">0</span>
+        <span class="metric-label">MSGS</span>
+      </div>
+      <div class="status-badge" id="conn-badge">
+        <span class="status-dot pulse-dot"></span>
+        <span id="conn-label">CONNECTING</span>
+      </div>
+    </div>
+    <div class="tb-right">
+      <div id="clock-date"></div>
+      <div id="clock-time"></div>
+    </div>
+  </header>
+
+  <!-- MAIN GRID -->
+  <main id="main-grid">
+
+    <!-- LEFT: AGENT NETWORK -->
+    <aside id="agent-panel">
+      <div class="panel-header">
+        <span class="ph-icon">◈</span>
+        <span>AGENT NETWORK</span>
+        <button class="ph-btn" id="btn-scan" title="Scan LAN">⟳</button>
+      </div>
+      <div id="agent-list"></div>
+      <button class="add-agent-btn" id="btn-add-agent">
+        <span>+</span> CONNECT AGENT
+      </button>
+
+      <!-- MEMORY SECTION -->
+      <div id="memory-section">
+        <div class="memory-header" id="btn-toggle-memory">
+          <span class="ph-icon">🧠</span>
+          <span>OBSIDIAN MEMORY</span>
+          <span id="memory-note-count" class="memory-badge">—</span>
+          <span class="memory-chevron" id="memory-chevron">▲</span>
+        </div>
+        <div id="memory-body">
+          <div id="memory-status-bar">
+            <span id="memory-conn-dot" class="mem-dot"></span>
+            <span id="memory-conn-label">Disconnected</span>
+            <button class="mem-btn" id="btn-memory-sync" title="Sync vault">⟳</button>
+          </div>
+          <div id="memory-notes-list"></div>
+          <button class="mem-open-btn" id="btn-open-note-editor">+ New Note</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- CENTER: MISSION CONTROL CHAT -->
+    <section id="mission-control">
+      <div class="panel-header">
+        <span class="ph-icon">▶</span>
+        <span id="active-agent-label">CLAUDE — MISSION CONTROL</span>
+        <div class="mc-controls">
+          <button class="mc-btn" id="btn-broadcast" title="Broadcast to all online agents">⊕ BROADCAST</button>
+          <button class="mc-btn" id="btn-clear-chat" title="Clear chat">⌫</button>
+        </div>
+      </div>
+
+      <div id="agent-tabs-bar"></div>
+
+      <div id="chat-messages">
+        <div id="welcome-msg" class="welcome-screen">
+          <div class="welcome-logo">AV<br>AGENT<br>OS</div>
+          <div class="welcome-text">Mission Control Online</div>
+          <div class="welcome-sub">Select an agent and begin your mission</div>
+        </div>
+      </div>
+
+      <div id="typing-indicator" class="hidden">
+        <span class="ti-agent-name" id="ti-name">Claude</span>
+        <span class="ti-dots"><span></span><span></span><span></span></span>
+      </div>
+
+      <div id="chat-input-area">
+        <button id="btn-save-memory" class="mem-save-btn" title="Save conversation to Obsidian">💾</button>
+        <textarea id="chat-input" placeholder="Enter command or message..." rows="1"></textarea>
+        <button id="btn-send" disabled>
+          <span>TRANSMIT</span>
+          <span class="send-icon">⟶</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- RIGHT: SYSTEM LOG -->
+    <aside id="log-panel">
+      <div class="panel-header">
+        <span class="ph-icon">≡</span>
+        <span>SYSTEM LOG</span>
+        <button class="ph-btn" id="btn-clear-log">⌫</button>
+      </div>
+      <div id="log-filter">
+        <button class="lf-btn active" data-level="all">ALL</button>
+        <button class="lf-btn" data-level="info">INFO</button>
+        <button class="lf-btn" data-level="success">OK</button>
+        <button class="lf-btn" data-level="error">ERR</button>
+      </div>
+      <div id="log-entries"></div>
+    </aside>
+
+  </main>
+
+  <!-- BOTTOM: AGENT DETAIL -->
+  <footer id="agent-detail">
+    <div id="detail-tabs"></div>
+    <div id="detail-content">
+      <div class="detail-placeholder">Select an agent to view details</div>
+    </div>
+  </footer>
+
+  <!-- MODAL: ADD AGENT -->
+  <div id="modal-overlay" class="hidden">
+    <div id="modal-add-agent">
+      <div class="modal-header">
+        <span class="ph-icon">◈</span>
+        <span>CONNECT AGENT</span>
+        <button class="modal-close" id="btn-modal-close">✕</button>
+      </div>
+      <form id="form-add-agent">
+        <div class="form-row">
+          <label>AGENT NAME</label>
+          <input type="text" id="inp-name" placeholder="Hermes-01" required autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label>TYPE</label>
+          <select id="inp-type">
+            <option value="hermes">Hermes</option>
+            <option value="openclaw">OpenClaw</option>
+            <option value="ollama">Ollama (Local LLM)</option>
+            <option value="openai">OpenAI-Compatible</option>
+            <option value="generic">Generic HTTP</option>
+          </select>
+        </div>
+        <div class="form-row form-row-split">
+          <div>
+            <label>HOST / IP</label>
+            <input type="text" id="inp-host" placeholder="192.168.1.50" required autocomplete="off">
+          </div>
+          <div>
+            <label>PORT</label>
+            <input type="number" id="inp-port" placeholder="8080" value="8080">
+          </div>
+        </div>
+        <div class="form-row" id="row-endpoint">
+          <label>CHAT ENDPOINT <span class="label-hint">(optional)</span></label>
+          <input type="text" id="inp-endpoint" placeholder="/v1/chat/completions">
+        </div>
+        <div class="form-row" id="row-health">
+          <label>HEALTH ENDPOINT <span class="label-hint">(optional)</span></label>
+          <input type="text" id="inp-health" placeholder="/health">
+        </div>
+        <div class="form-row">
+          <label>API KEY <span class="label-hint">(optional)</span></label>
+          <input type="password" id="inp-apikey" placeholder="Bearer token if required">
+        </div>
+        <div class="form-row">
+          <label>REQUEST FORMAT</label>
+          <select id="inp-format">
+            <option value="openai">OpenAI-compatible</option>
+            <option value="anthropic">Anthropic-compatible</option>
+            <option value="simple">Simple (message field)</option>
+            <option value="auto">Auto-detect</option>
+          </select>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" id="btn-modal-cancel">CANCEL</button>
+          <button type="submit" class="btn-primary">CONNECT</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: NOTE EDITOR -->
+  <div id="modal-note" class="hidden">
+    <div id="modal-note-inner">
+      <div class="modal-header">
+        <span class="ph-icon">🧠</span>
+        <span id="note-editor-title">EDIT NOTE</span>
+        <button class="modal-close" id="btn-note-close">✕</button>
+      </div>
+      <div style="padding:12px 16px 6px">
+        <div class="form-row">
+          <label>FILE PATH <span class="label-hint">(relative to AvAgentOS/)</span></label>
+          <input type="text" id="inp-note-path" placeholder="shared-context.md" autocomplete="off">
+        </div>
+      </div>
+      <textarea id="note-editor-content" placeholder="Write your note in Markdown..."></textarea>
+      <div class="form-actions" style="padding:8px 16px 14px">
+        <button class="btn-secondary" id="btn-note-cancel">CANCEL</button>
+        <button class="btn-primary" id="btn-note-save">SAVE TO VAULT</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: DISCOVER -->
+  <div id="modal-discover" class="hidden">
+    <div id="modal-scan">
+      <div class="modal-header">
+        <span class="ph-icon">⟳</span>
+        <span>LAN SCAN</span>
+        <button class="modal-close" id="btn-discover-close">✕</button>
+      </div>
+      <div id="scan-status">Ready to scan local network for agents.</div>
+      <div id="scan-progress-bar"><div id="scan-progress-fill"></div></div>
+      <div id="scan-results"></div>
+      <div class="form-actions">
+        <button class="btn-secondary" id="btn-discover-cancel">CLOSE</button>
+        <button class="btn-primary" id="btn-start-scan">START SCAN</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
