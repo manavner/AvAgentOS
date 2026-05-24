@@ -170,6 +170,44 @@ socket.on('chat:cleared', ({ agentId }) => {
 
 socket.on('system:log', ({ message, level, ts }) => addLog(message, level, ts));
 
+// ── Incoming messages from agents (push via /api/inbox) ───────────
+socket.on('agent:inbox', ({ agent, message, ts }) => {
+  // Find agent by name or type
+  const agentEntry = [...state.agents.values()].find(a =>
+    a.name.toLowerCase() === agent.toLowerCase() ||
+    a.type.toLowerCase() === agent.toLowerCase()
+  );
+  const agentId = agentEntry?.id || agent;
+
+  // Add to BOTH possible keys to be safe
+  [agentId, agent].forEach(key => {
+    if (!state.chats.has(key)) state.chats.set(key, []);
+  });
+  const entry = { role: 'assistant', content: message, ts: ts || new Date().toISOString() };
+  state.chats.get(agentId).push(entry);
+
+  // Always re-render active chat (if this agent is active)
+  if (state.activeAgentId === agentId) {
+    renderChat(agentId);
+  } else {
+    // Still show a notification badge on the tab
+    const tab = el.agentTabsBar?.querySelector(`[data-id="${agentId}"]`);
+    if (tab && !tab.querySelector('.inbox-dot')) {
+      const dot = document.createElement('span');
+      dot.className = 'inbox-dot';
+      dot.style.cssText = 'display:inline-block;width:8px;height:8px;background:#f59e0b;border-radius:50%;margin-left:4px;';
+      tab.appendChild(dot);
+    }
+  }
+
+  // Flash agent card
+  const card = document.querySelector(`[data-agent-id="${agentId}"]`);
+  if (card) {
+    card.classList.add('inbox-flash');
+    setTimeout(() => card.classList.remove('inbox-flash'), 2000);
+  }
+});
+
 socket.on('discover:started', () => {
   el.scanStatus.textContent = 'Scanning local network...';
   el.scanProgressFill.style.width = '0%';

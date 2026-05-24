@@ -15,3 +15,9 @@ Thumbs.db
 # Editor
 .vscode/
 *.swp
+
+# Runtime data — user-specific, not for repo
+agents.json
+
+# Claude Code IDE settings
+.claude/

@@ -253,6 +253,13 @@ body {
   gap: 6px;
 }
 
+@keyframes inbox-flash {
+  0%   { border-color: #f59e0b; box-shadow: 0 0 16px #f59e0b88; }
+  50%  { border-color: #fbbf24; box-shadow: 0 0 32px #fbbf2488; }
+  100% { border-color: var(--border-dim); box-shadow: none; }
+}
+.inbox-flash { animation: inbox-flash 2s ease-out; }
+
 .agent-card {
   background: var(--bg-card);
   border: 1px solid var(--border-dim);

@@ -5,9 +5,32 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 const fetch = require('node-fetch');
 const ObsidianMemory = require('./memory');
 require('dotenv').config();
+
+const AGENTS_FILE = path.join(__dirname, 'agents.json');
+
+function saveAgents() {
+  const toSave = [...agents.values()].filter(a => !a.builtIn);
+  fs.writeFileSync(AGENTS_FILE, JSON.stringify(toSave, null, 2));
+}
+
+function loadAgents() {
+  try {
+    if (!fs.existsSync(AGENTS_FILE)) return;
+    const saved = JSON.parse(fs.readFileSync(AGENTS_FILE, 'utf8'));
+    for (const agent of saved) {
+      agent.status = 'connecting';
+      agents.set(agent.id, agent);
+      histories.set(agent.id, []);
+    }
+    console.log(`  ✓ Loaded ${saved.length} saved agent(s)`);
+  } catch (e) {
+    console.log(`  ⚠ Could not load agents.json: ${e.message}`);
+  }
+}
 
 const app = express();
 const httpServer = createServer(app);
@@ -52,6 +75,30 @@ const claudeClient = process.env.ANTHROPIC_API_KEY
 const googleClient = process.env.GOOGLE_API_KEY
   ? new GoogleGenerativeAI(process.env.GOOGLE_API_KEY)
   : null;
+
+// ── Load saved agents (before built-ins) ─────────────────────────
+loadAgents();
+
+// ── OpenRouter built-in (if key provided) ────────────────────────
+if (process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_key_here') {
+  agents.set('openrouter', {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    type: 'openrouter',
+    host: 'https://openrouter.ai',
+    port: 443,
+    apiKey: process.env.OPENROUTER_API_KEY,
+    config: { model: process.env.OPENROUTER_DEFAULT_MODEL || 'qwen/qwen3-235b-a22b' },
+    status: 'online',
+    description: `OpenRouter → ${process.env.OPENROUTER_DEFAULT_MODEL || 'qwen/qwen3-235b-a22b'}`,
+    icon: 'openrouter',
+    builtIn: true,
+    connectedAt: Date.now(),
+    messageCount: 0,
+    latency: null,
+  });
+  histories.set('openrouter', []);
+}
 
 // ── Built-in Agents ───────────────────────────────────────────────
 agents.set('claude', {
@@ -116,6 +163,7 @@ app.post('/api/agents', async (req, res) => {
   });
 
   io.emit('agent:added', agent);
+  saveAgents();
   syslog(`Agent "${name}" added (${host}:${port || 8080})`, 'info');
   res.json(agent);
 });
@@ -126,6 +174,7 @@ app.delete('/api/agents/:id', (req, res) => {
   if (agent.builtIn) return res.status(403).json({ error: 'Cannot remove built-in agents' });
   agents.delete(req.params.id);
   histories.delete(req.params.id);
+  saveAgents();
   io.emit('agent:removed', { id: req.params.id });
   syslog(`Agent "${agent.name}" removed`, 'warning');
   res.json({ success: true });
@@ -143,6 +192,36 @@ app.post('/api/memory/sync', async (req, res) => {
   await memory.sync(); res.json({ status: memory.getStatus(), notes: memory.listNotes() });
   io.emit('memory:status', memory.getStatus());
   io.emit('memory:notes', memory.listNotes());
+});
+
+// ── Command queue — agents pull pending commands ─────────────────
+const commandQueue = new Map(); // agentName → [{id, message, ts}]
+
+app.post('/api/commands/:agent', (req, res) => {
+  const agent = req.params.agent;
+  const { message } = req.body;
+  if (!message) return res.status(400).json({ error: 'message required' });
+  if (!commandQueue.has(agent)) commandQueue.set(agent, []);
+  const cmd = { id: Date.now(), message, ts: new Date().toISOString() };
+  commandQueue.get(agent).push(cmd);
+  res.json({ ok: true, id: cmd.id });
+});
+
+app.get('/api/commands/:agent', (req, res) => {
+  const agent = req.params.agent;
+  const cmds = commandQueue.get(agent) || [];
+  commandQueue.set(agent, []); // clear after reading
+  res.json({ commands: cmds });
+});
+
+// ── Inbox — agents push messages here ────────────────────────────
+app.post('/api/inbox', (req, res) => {
+  const { agent, message, type } = req.body;
+  if (!message) return res.status(400).json({ error: 'message required' });
+  const agentName = agent || 'unknown';
+  syslog(`📨 ${agentName}: ${message.substring(0, 120)}`, 'success');
+  io.emit('agent:inbox', { agent: agentName, message, type: type || 'message', ts: new Date().toISOString() });
+  res.json({ ok: true, received: true });
 });
 
 app.get('/api/network', (req, res) => {
@@ -336,6 +415,38 @@ async function handleGemini(socket, userMessage) {
   }
 }
 
+// ── Hermes Telegram Handler ──────────────────────────────────────
+async function handleHermesTelegram(socket, agentId, userMessage) {
+  const token  = process.env.HERMES_TELEGRAM_TOKEN;
+  const chatId = process.env.HERMES_TELEGRAM_CHAT_ID;
+  if (!token || !chatId) {
+    return socket.emit('chat:error', { agentId, error: 'HERMES_TELEGRAM_TOKEN or HERMES_TELEGRAM_CHAT_ID not set in .env' });
+  }
+
+  const agent = agents.get(agentId);
+  const history = histories.get(agentId) || [];
+  history.push({ role: 'user', content: userMessage });
+  agent.messageCount++;
+  socket.emit('chat:stream:start', { agentId });
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: userMessage }),
+    });
+    if (!res.ok) throw new Error(`Telegram API error: ${res.status}`);
+
+    // Response will come back via /api/inbox → socket agent:inbox
+    socket.emit('chat:stream:end', { agentId, fullText: '_(message sent to Hermes via Telegram — reply incoming)_' });
+    syslog(`→ Hermes [Telegram]: "${userMessage.substring(0, 60)}"`, 'info');
+  } catch (err) {
+    socket.emit('chat:error', { agentId, error: err.message });
+    syslog(`Hermes Telegram error: ${err.message}`, 'error');
+    history.pop();
+  }
+}
+
 // ── Agent Handler ────────────────────────────────────────────────
 async function handleAgent(socket, agentId, userMessage) {
   const agent = agents.get(agentId);
@@ -345,13 +456,23 @@ async function handleAgent(socket, agentId, userMessage) {
   socket.emit('chat:stream:start', { agentId });
 
   try {
-    const baseUrl = `http://${agent.host}:${agent.port}`;
-    const endpoint = agent.config?.chatEndpoint || '/v1/chat/completions';
+    // Support full URLs (https://openrouter.ai) or host:port (192.168.1.1:8080)
+    const baseUrl = agent.host.startsWith('http')
+      ? agent.host.replace(/\/$/, '')
+      : `http://${agent.host}:${agent.port}`;
+    // hermes-dashboard and openrouter use /api/v1/..., most others use /v1/...
+    const defaultEndpoint = (agent.type === 'hermes' || agent.type === 'openrouter')
+      ? '/api/v1/chat/completions'
+      : '/v1/chat/completions';
+    const endpoint = agent.config?.chatEndpoint || defaultEndpoint;
     const fmt = agent.config?.format || 'openai';
+
+    // Hermes dashboard uses provider name as model, or pass-through to openrouter/openai-codex
+    const defaultModel = agent.type === 'hermes' ? 'openai-codex' : 'default';
 
     let body;
     if (fmt === 'openai') {
-      body = { model: agent.config?.model || 'default', messages: history, stream: false };
+      body = { model: agent.config?.model || defaultModel, messages: history, stream: false };
     } else if (fmt === 'anthropic') {
       body = { messages: history, max_tokens: 2048 };
     } else if (fmt === 'simple') {
@@ -361,11 +482,14 @@ async function handleAgent(socket, agentId, userMessage) {
     }
 
     const headers = { 'Content-Type': 'application/json' };
-    if (agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
+    // Only send Authorization if apiKey is set AND dashboard doesn't use empty-key (no-auth) mode
+    if (agent.apiKey && agent.apiKey.trim() !== '') {
+      headers['Authorization'] = `Bearer ${agent.apiKey}`;
+    }
 
     const res = await fetch(`${baseUrl}${endpoint}`, {
       method: 'POST', headers, body: JSON.stringify(body),
-      timeout: 30000,
+      timeout: 90000,
     });
 
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -398,7 +522,9 @@ async function pingAgent(agentId) {
     const start = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
-    const healthPath = agent.config?.healthEndpoint || '/health';
+    // hermes-dashboard exposes /api/status instead of /health
+    const defaultHealth = agent.type === 'hermes' ? '/api/status' : '/health';
+    const healthPath = agent.config?.healthEndpoint || defaultHealth;
     const res = await fetch(`http://${agent.host}:${agent.port}${healthPath}`, {
       signal: controller.signal,
     });
