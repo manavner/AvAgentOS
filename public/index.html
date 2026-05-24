@@ -59,6 +59,9 @@
       <button class="add-agent-btn" id="btn-add-agent">
         <span>+</span> CONNECT AGENT
       </button>
+      <button class="add-agent-btn onboard-btn" id="btn-onboard">
+        <span>⚡</span> AUTO-ONBOARD
+      </button>
 
       <!-- MEMORY SECTION -->
       <div id="memory-section">
@@ -201,6 +204,42 @@
           <button type="submit" class="btn-primary">CONNECT</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- MODAL: ONBOARD AGENT -->
+  <div id="modal-onboard" class="hidden">
+    <div id="modal-onboard-inner">
+      <div class="modal-header">
+        <span class="ph-icon">⚡</span>
+        <span>AUTO-ONBOARD AGENT</span>
+        <button class="modal-close" id="btn-onboard-close">✕</button>
+      </div>
+      <div id="onboard-step-1">
+        <div class="onboard-hint">
+          שלח לסוכן את הפרומפט הזה, הדבק את התשובה למטה:
+        </div>
+        <div class="onboard-prompt-box" id="onboard-prompt-text"></div>
+        <button class="btn-copy-prompt" id="btn-copy-prompt">📋 העתק פרומפט</button>
+        <div class="form-row" style="margin-top:12px">
+          <label>שם לסוכן <span class="label-hint">(אופציונלי)</span></label>
+          <input type="text" id="inp-onboard-name" placeholder="WSL-Agent" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label>תשובת הסוכן — הדבק כאן</label>
+          <textarea id="inp-onboard-report" rows="10" placeholder="הדבק כאן את הפלט שקיבלת מהסוכן..."></textarea>
+        </div>
+        <div class="form-actions">
+          <button class="btn-secondary" id="btn-onboard-cancel">ביטול</button>
+          <button class="btn-primary" id="btn-onboard-submit">⚡ חבר אוטומטית</button>
+        </div>
+      </div>
+      <div id="onboard-step-2" class="hidden">
+        <div id="onboard-result"></div>
+        <div class="form-actions">
+          <button class="btn-primary" id="btn-onboard-done">סגור</button>
+        </div>
+      </div>
     </div>
   </div>
 

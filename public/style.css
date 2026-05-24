@@ -395,6 +395,97 @@ body {
   box-shadow: var(--glow-sm) inset;
 }
 
+.onboard-btn {
+  border-color: var(--orange);
+  color: var(--orange);
+  margin-top: 2px;
+}
+.onboard-btn:hover {
+  background: rgba(245,158,11,0.1);
+  border-color: var(--orange);
+  box-shadow: 0 0 8px rgba(245,158,11,0.3) inset;
+}
+
+/* ── Onboard Modal ──────────────────────────────────────────────── */
+#modal-onboard {
+  position: fixed; inset: 0;
+  background: rgba(3,4,13,0.85);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000; backdrop-filter: blur(4px);
+}
+#modal-onboard-inner {
+  background: var(--bg-card);
+  border: 1px solid var(--orange);
+  border-radius: var(--radius-md);
+  width: min(640px, 96vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  box-shadow: 0 0 40px rgba(245,158,11,0.2);
+}
+.onboard-hint {
+  padding: 10px 16px 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.onboard-prompt-box {
+  margin: 6px 16px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow-y: auto;
+  direction: ltr;
+  text-align: left;
+}
+.btn-copy-prompt {
+  margin: 6px 16px;
+  padding: 5px 12px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--cyan);
+  font-family: var(--font-hud);
+  font-size: 10px;
+  cursor: pointer;
+  letter-spacing: 0.1em;
+}
+.btn-copy-prompt:hover { background: var(--bg-hover); }
+#inp-onboard-report {
+  width: 100%; padding: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+  direction: ltr;
+}
+#inp-onboard-report:focus { outline: none; border-color: var(--orange); }
+.onboard-success { padding: 16px; }
+.onboard-error   { padding: 16px; color: var(--red, #ef4444); }
+.onboard-row     { padding: 4px 0; font-size: 13px; color: var(--text-dim); }
+.onboard-row strong { color: var(--text); }
+.onboard-online  { margin-top: 12px; color: var(--green); font-size: 14px; font-weight: 600; }
+.onboard-steps   { margin-top: 12px; font-size: 12px; color: var(--text-dim); }
+.onboard-steps ol { margin: 6px 0 0 18px; line-height: 1.8; }
+.onboard-success details {
+  margin-top: 10px; font-size: 11px; color: var(--text-dim);
+}
+.onboard-success pre {
+  margin-top: 6px; padding: 8px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  direction: ltr;
+}
+
 /* ── Mission Control (Center) ──────────────────────────────────── */
 #mission-control {
   display: flex;

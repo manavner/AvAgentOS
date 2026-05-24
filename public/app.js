@@ -623,6 +623,103 @@ $('btn-start-scan').addEventListener('click', () => {
   socket.emit('discover:scan', {});
 });
 
+// ── Onboard modal ──────────────────────────────────────────────────
+const ONBOARD_PROMPT = `ענה בעברית. אני צריך לחבר אותך ל-AvAgentOS Mission Control.
+הרץ את הפקודות הבאות ובסוף פלוט JSON בלבד (אחרי השורה ---JSON---):
+
+hostname -I
+hostname
+which hermes 2>/dev/null || find /opt /usr /home -name "hermes" -type f 2>/dev/null | head -3
+python3 --version 2>/dev/null
+pip3 show fastapi 2>/dev/null | grep Name
+hermes profile list 2>/dev/null | head -5
+
+---JSON---
+{
+  "hostname": "<תוצאת hostname>",
+  "ip": "<כתובת IP ראשית מ-hostname -I>",
+  "hermes_bin": "<נתיב מלא לבינארי hermes או null>",
+  "hermes_profile": "<שם הפרופיל הפעיל או null>",
+  "python3": <true/false>,
+  "fastapi": <true/false>,
+  "os": "<שם מערכת ההפעלה>"
+}`;
+
+function openOnboardModal() {
+  $('modal-onboard').classList.remove('hidden');
+  $('onboard-step-1').classList.remove('hidden');
+  $('onboard-step-2').classList.add('hidden');
+  $('inp-onboard-report').value = '';
+  $('inp-onboard-name').value = '';
+  $('onboard-prompt-text').textContent = ONBOARD_PROMPT;
+}
+function closeOnboardModal() {
+  $('modal-onboard').classList.add('hidden');
+}
+
+$('btn-onboard').addEventListener('click', openOnboardModal);
+$('btn-onboard-close').addEventListener('click', closeOnboardModal);
+$('btn-onboard-cancel').addEventListener('click', closeOnboardModal);
+$('btn-onboard-done').addEventListener('click', closeOnboardModal);
+$('modal-onboard').addEventListener('click', e => { if (e.target === $('modal-onboard')) closeOnboardModal(); });
+
+$('btn-copy-prompt').addEventListener('click', () => {
+  navigator.clipboard.writeText(ONBOARD_PROMPT).then(() => {
+    $('btn-copy-prompt').textContent = '✅ הועתק!';
+    setTimeout(() => { $('btn-copy-prompt').textContent = '📋 העתק פרומפט'; }, 2000);
+  });
+});
+
+$('btn-onboard-submit').addEventListener('click', async () => {
+  const report = $('inp-onboard-report').value.trim();
+  const name   = $('inp-onboard-name').value.trim();
+  if (!report) { alert('הדבק את תשובת הסוכן תחילה'); return; }
+
+  $('btn-onboard-submit').textContent = '⏳ מנתח...';
+  $('btn-onboard-submit').disabled = true;
+
+  try {
+    const res  = await fetch('/api/onboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report, name }),
+    });
+    const data = await res.json();
+
+    const resultEl = $('onboard-result');
+    if (!data.ok) {
+      resultEl.innerHTML = `<div class="onboard-error">❌ ${data.error}</div>`;
+    } else {
+      const d = data.detected;
+      const steps = data.setupSteps.map(s => `<li>${s.replace(/\n/g,'<br>')}</li>`).join('');
+      resultEl.innerHTML = `
+        <div class="onboard-success">
+          <div class="onboard-row">✅ IP זוהה: <strong>${d.ip}</strong></div>
+          <div class="onboard-row">🖥 שם מחשב: <strong>${d.hostname || '—'}</strong></div>
+          <div class="onboard-row">⚡ Hermes: <strong>${d.hermesBin || '—'}</strong></div>
+          <div class="onboard-row">🐍 Python3: <strong>${d.hasPython ? '✅' : '❌'}</strong>
+            &nbsp; FastAPI: <strong>${d.hasFastAPI ? '✅' : '❌'}</strong></div>
+          <div class="onboard-row">📡 אסטרטגיה: <strong>${data.strategy === 'direct' ? 'חיבור ישיר' : 'Bridge נדרש'}</strong></div>
+          ${data.online
+            ? '<div class="onboard-online">🟢 הסוכן כבר ONLINE!</div>'
+            : data.setupSteps.length
+              ? `<div class="onboard-steps"><strong>צעדים להשלמת החיבור:</strong><ol>${steps}</ol></div>`
+              : '<div class="onboard-online">🟢 סוכן נוסף לדשבורד!</div>'
+          }
+          ${data.bridgeEntry ? `<details><summary>Bridge config entry</summary><pre>${JSON.stringify(data.bridgeEntry,null,2)}</pre></details>` : ''}
+        </div>`;
+    }
+
+    $('onboard-step-1').classList.add('hidden');
+    $('onboard-step-2').classList.remove('hidden');
+  } catch (err) {
+    alert('שגיאה: ' + err.message);
+  } finally {
+    $('btn-onboard-submit').textContent = '⚡ חבר אוטומטית';
+    $('btn-onboard-submit').disabled = false;
+  }
+});
+
 // ── Input handling ─────────────────────────────────────────────────
 el.chatInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {

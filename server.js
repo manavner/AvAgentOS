@@ -214,6 +214,96 @@ app.get('/api/commands/:agent', (req, res) => {
   res.json({ commands: cmds });
 });
 
+// ── Onboard — auto-parse discovery report & register agent ───────
+app.post('/api/onboard', async (req, res) => {
+  const { report, name } = req.body;
+  if (!report) return res.status(400).json({ error: 'report required' });
+
+  // 1. Try to extract JSON block from the report
+  let data = {};
+  const jsonMatch = report.match(/\{[\s\S]*?\}/);
+  if (jsonMatch) {
+    try { data = JSON.parse(jsonMatch[0]); } catch {}
+  }
+
+  // 2. Fallback regex parsing
+  const ipRx   = /\b(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)\b/;
+  const ip       = data.ip        || (report.match(ipRx) || [])[0];
+  const hostname = data.hostname  || (report.match(/hostname[:\s]+([a-zA-Z0-9._-]+)/i) || [])[1];
+  const hermesBin= data.hermes_bin|| (report.match(/\/[^\s\n]*hermes[^\s\n]*/g)||[])
+                                       .find(p => p.includes('bin') || p.includes('venv'));
+  const hasPython  = data.python3  !== undefined ? data.python3  : /python3?\s+3\./i.test(report);
+  const hasFastAPI = data.fastapi  !== undefined ? data.fastapi  : /fastapi/i.test(report);
+  const profile    = data.hermes_profile || null;
+
+  if (!ip) {
+    return res.json({ ok: false, error: 'לא נמצאה כתובת IP בדו"ח', detected: data });
+  }
+
+  const needsBridge = !!(hermesBin && hasPython && hasFastAPI);
+  const agentId     = `agent_${Date.now()}`;
+  const agentName   = name || hostname || `Agent@${ip}`;
+  const bridgePort  = 8765;
+  const agentIdSlug = (agentName).toLowerCase().replace(/[^a-z0-9]/g, '-');
+
+  const agent = {
+    id: agentId,
+    name: agentName,
+    type: 'hermes',
+    host: ip,
+    port: bridgePort,
+    apiKey: null,
+    config: {
+      format: 'openai',
+      chatEndpoint:   `/agent/${agentIdSlug}/api/v1/chat/completions`,
+      healthEndpoint: `/agent/${agentIdSlug}/health`,
+    },
+    status: 'connecting',
+    description: `${hostname || 'WSL'} @ ${ip}`,
+    icon: 'hermes',
+    builtIn: false,
+    connectedAt: Date.now(),
+    messageCount: 0,
+    latency: null,
+  };
+
+  agents.set(agentId, agent);
+  histories.set(agentId, []);
+  saveAgents();
+  io.emit('agent:added', agent);
+  syslog(`⚡ Onboarding "${agentName}" @ ${ip}`, 'info');
+
+  // 3. Ping to check if bridge is already running
+  const pingOk = await pingAgent(agentId);
+
+  // 4. Build bridge config entry (for agents_config.json on remote)
+  const bridgeEntry = needsBridge ? {
+    id:          agentIdSlug,
+    container:   null,
+    type:        'local',
+    bin:         hermesBin,
+    profile:     profile || null,
+    description: agentName,
+  } : null;
+
+  const setupSteps = needsBridge && agent.status !== 'online' ? [
+    `1. העתק bridge.py ו-agents_config.json ל-${ip}`,
+    `2. הוסף לagents_config.json:\n${JSON.stringify(bridgeEntry, null, 2)}`,
+    `3. על ${ip}: python bridge.py`,
+    `4. הסוכן יופיע ONLINE אוטומטית`,
+  ] : [];
+
+  res.json({
+    ok: true,
+    agentId,
+    detected: { ip, hostname, hermesBin, hasPython, hasFastAPI, profile },
+    strategy: needsBridge ? 'bridge-needed' : 'direct',
+    online: agent.status === 'online',
+    setupSteps,
+    bridgeEntry,
+  });
+});
+
 // ── Inbox — agents push messages here ────────────────────────────
 app.post('/api/inbox', (req, res) => {
   const { agent, message, type } = req.body;
