@@ -48,7 +48,8 @@ class ChatRequest(BaseModel):
 
 class AgentDef(BaseModel):
     id:          str
-    container:   str
+    container:   Optional[str] = None   # None for local agents
+    type:        Optional[str] = "docker"  # "docker" | "local"
     profile:     Optional[str] = None
     bin:         Optional[str] = None
     description: Optional[str] = ""
@@ -121,11 +122,17 @@ def call_hermes(agent_id: str, message: str) -> str:
     if not agent:
         return f"[Bridge: unknown agent '{agent_id}']"
 
-    bin_path  = agent.get("bin") or HERMES_BIN
-    container = agent["container"]
-    profile   = agent.get("profile")
+    bin_path   = agent.get("bin") or HERMES_BIN
+    container  = agent.get("container")
+    profile    = agent.get("profile")
+    agent_type = agent.get("type", "docker")  # "docker" | "local"
 
-    cmd = ["docker", "exec", "-i", container, bin_path]
+    # "local" = hermes runs natively (WSL / Linux), no docker exec
+    if agent_type == "local" or not container:
+        cmd = [bin_path]
+    else:
+        cmd = ["docker", "exec", "-i", container, bin_path]
+
     if profile:
         cmd += ["--profile", profile]
     cmd += ["-z", message, "chat"]
