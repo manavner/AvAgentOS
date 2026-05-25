@@ -5,14 +5,20 @@
       "container": "hermes",
       "profile": null,
       "bin": "/opt/hermes/.venv/bin/hermes",
-      "description": "Main Hermes agent (default profile)"
+      "description": "Main Hermes agent (default profile)",
+      "default_user": "avner",
+      "user_profiles": {
+        "avner": null,
+        "admin": null
+      }
     },
     {
       "id": "cheapworker",
       "container": "hermes-gateway",
       "profile": "cheapworker",
       "bin": "/opt/hermes/.venv/bin/hermes",
-      "description": "Hermes cheapworker - Qwen3 Coder Flash"
+      "description": "Hermes cheapworker - Qwen3 Coder Flash",
+      "default_user": "avner"
     }
   ]
 }

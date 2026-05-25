@@ -45,6 +45,7 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = None
     max_tokens:  Optional[int]   = None
     stream:      Optional[bool]  = False
+    user:        Optional[str]   = None  # user identity — injected by AvAgentOS
 
 class AgentDef(BaseModel):
     id:          str
@@ -115,7 +116,7 @@ def _strip(text: str) -> str:
     return _ANSI.sub("", text).strip()
 
 # ── Core: run hermes inside a container ──────────────────────────
-def call_hermes(agent_id: str, message: str) -> str:
+def call_hermes(agent_id: str, message: str, user: str = None) -> str:
     with _lock:
         agent = dict(_agents.get(agent_id, {}))
 
@@ -124,14 +125,54 @@ def call_hermes(agent_id: str, message: str) -> str:
 
     bin_path   = agent.get("bin") or HERMES_BIN
     container  = agent.get("container")
-    profile    = agent.get("profile")
     agent_type = agent.get("type", "docker")  # "docker" | "local"
+
+    # ── Identity envelope ─────────────────────────────────────────
+    resolved_user = user or agent.get("default_user")
+    user_profiles  = agent.get("user_profiles", {})
+    profile = (user_profiles.get(resolved_user)
+               if resolved_user and user_profiles
+               else agent.get("profile"))
+
+    # Inject envelope block before the message so Hermes knows who is asking
+    if resolved_user:
+        try:
+            env = json.loads(resolved_user)   # full envelope from AvAgentOS
+            fu  = env.get("from_user", {})
+            fd  = env.get("from_device", {})
+            gs  = env.get("gui_session", {})
+            pm  = env.get("permissions", {})
+            envelope_block = (
+                f"[AVAGENTOS ENVELOPE]\n"
+                f"source: {env.get('source','avagentos')}\n"
+                f"request_id: {env.get('request_id','?')}\n"
+                f"user_id: {fu.get('user_id','?')}\n"
+                f"display_name: {fu.get('display_name','?')}\n"
+                f"auth_level: {fu.get('auth_level','?')}\n"
+                f"device: {fd.get('hostname','?')}\n"
+                f"role: {pm.get('role','?')}\n"
+                f"risk_allowed: {pm.get('risk_level_allowed','?')}\n"
+                f"project_id: {gs.get('project_id') or 'none'}\n"
+                f"session_id: {gs.get('session_id') or 'none'}\n"
+                f"[/AVAGENTOS ENVELOPE]\n\n"
+            )
+            # also use user_id for profile resolution
+            uid = fu.get("display_name", resolved_user).lower().replace(" ","_")
+            if user_profiles and uid in user_profiles:
+                profile = user_profiles[uid]
+        except (json.JSONDecodeError, TypeError):
+            # plain string fallback
+            envelope_block = f"[User: {resolved_user}]\n\n"
+        message = envelope_block + message
 
     # "local" = hermes runs natively (WSL / Linux), no docker exec
     if agent_type == "local" or not container:
         cmd = [bin_path]
+        _cwd = agent.get("cwd", None)  # optional working dir for local agents
     else:
-        cmd = ["docker", "exec", "-i", container, bin_path]
+        workdir = agent.get("workdir", "/root")  # default to /root where hermes memory lives
+        cmd = ["docker", "exec", "-i", "-w", workdir, container, bin_path]
+        _cwd = None
 
     if profile:
         cmd += ["--profile", profile]
@@ -142,6 +183,7 @@ def call_hermes(agent_id: str, message: str) -> str:
     try:
         proc = subprocess.Popen(
             cmd,
+            cwd=_cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -301,9 +343,9 @@ def chat_by_path(agent_id: str, req: ChatRequest):
     if agent_id not in _agents:
         raise HTTPException(404, f"Agent '{agent_id}' not found")
     msg = _user_msg(req)
-    print(f"  → [{agent_id}] {msg[:60]!r}")
+    print(f"  → [{agent_id}] user={req.user!r} {msg[:60]!r}")
     t0  = time.time()
-    txt = call_hermes(agent_id, msg)
+    txt = call_hermes(agent_id, msg, user=req.user)
     print(f"  ✓ [{agent_id}] {time.time()-t0:.1f}s  {txt[:60]!r}")
     return _resp(txt, agent_id)
 
@@ -318,9 +360,9 @@ def chat_by_model(req: ChatRequest):
     if not agent_id:
         raise HTTPException(503, "No agents configured")
     msg = _user_msg(req)
-    print(f"  → [{agent_id}] {msg[:60]!r}")
+    print(f"  → [{agent_id}] user={req.user!r} {msg[:60]!r}")
     t0  = time.time()
-    txt = call_hermes(agent_id, msg)
+    txt = call_hermes(agent_id, msg, user=req.user)
     print(f"  ✓ [{agent_id}] {time.time()-t0:.1f}s  {txt[:60]!r}")
     return _resp(txt, agent_id)
 

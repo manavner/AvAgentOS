@@ -18,6 +18,7 @@ Thumbs.db
 
 # Runtime data — user-specific, not for repo
 agents.json
+projects.json
 
 # Claude Code IDE settings
 .claude/

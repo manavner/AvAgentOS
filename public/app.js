@@ -952,6 +952,262 @@ $('btn-note-save').addEventListener('click', () => {
   addLog(`Note saved: ${relPath}`, 'success');
 });
 
+// ── View switching (Mission Control ↔ Projects) ────────────────────
+const viewNav = document.getElementById('view-nav');
+const mainGrid = document.getElementById('main-grid');
+const projectsView = document.getElementById('projects-view');
+const agentDetail = document.getElementById('agent-detail');
+
+viewNav?.querySelectorAll('.view-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    viewNav.querySelectorAll('.view-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const view = btn.dataset.view;
+    if (view === 'projects') {
+      mainGrid.classList.add('hidden');
+      agentDetail.classList.add('hidden');
+      projectsView.classList.remove('hidden');
+      loadProjects();
+    } else {
+      mainGrid.classList.remove('hidden');
+      agentDetail.classList.remove('hidden');
+      projectsView.classList.add('hidden');
+    }
+  });
+});
+
+// ── Projects ───────────────────────────────────────────────────────
+const projState = { projects: [] };
+
+async function loadProjects() {
+  const res = await fetch('/api/projects');
+  projState.projects = await res.json();
+  renderProjects();
+}
+
+function renderProjects() {
+  const tbody = document.getElementById('projects-tbody');
+  const empty = document.getElementById('projects-empty');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!projState.projects.length) {
+    empty?.classList.remove('hidden');
+    return;
+  }
+  empty?.classList.add('hidden');
+  for (const p of projState.projects) {
+    const agent = state.agents.get(p.assigned_agent_id);
+    const agentName = agent ? escHtml(agent.name) : '<span style="color:var(--text-muted)">—</span>';
+    const updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString('he-IL') : '—';
+    const statusClass = { active: 'status-active', in_progress: 'status-inprog', blocked: 'status-blocked', done: 'status-done', archived: 'status-archived' }[p.status] || '';
+    const tr = document.createElement('tr');
+    tr.dataset.id = p.id;
+    tr.innerHTML = `
+      <td><div class="proj-name">${escHtml(p.display_name || p.name)}</div><div class="proj-id">${escHtml(p.name)}</div></td>
+      <td>${agentName}</td>
+      <td><span class="proj-phase">${escHtml(p.phase || '—')}</span></td>
+      <td><span class="proj-status ${statusClass}">${escHtml(p.status || '—')}</span></td>
+      <td>${updated}</td>
+      <td class="proj-actions">
+        <button class="proj-btn btn-ask" data-id="${p.id}" title="שאל את הסוכן">🔄 Ask</button>
+        <button class="proj-btn btn-edit" data-id="${p.id}" title="ערוך">✏️</button>
+        <button class="proj-btn btn-del danger" data-id="${p.id}" title="מחק">✕</button>
+      </td>
+    `;
+    tr.querySelector('.btn-ask').addEventListener('click', () => askAgent(p.id));
+    tr.querySelector('.btn-edit').addEventListener('click', () => openProjectModal(p));
+    tr.querySelector('.btn-del').addEventListener('click', () => deleteProject(p.id));
+    tbody.appendChild(tr);
+  }
+}
+
+async function askAgent(projectId) {
+  const btn = document.querySelector(`.btn-ask[data-id="${projectId}"]`);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  try {
+    const res = await fetch(`/api/projects/${projectId}/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    const data = await res.json();
+    if (data.ok) {
+      showResponsePanel(data.project?.display_name || projectId, data.response);
+      // Update local state
+      const idx = projState.projects.findIndex(p => p.id === projectId);
+      if (idx >= 0) projState.projects[idx] = data.project;
+      renderProjects();
+    } else {
+      showResponsePanel('שגיאה', data.error || 'Unknown error');
+    }
+  } catch (err) {
+    showResponsePanel('שגיאה', err.message);
+  } finally {
+    if (btn) { btn.textContent = '🔄 Ask'; btn.disabled = false; }
+  }
+}
+
+function showResponsePanel(title, content) {
+  const panel = document.getElementById('project-response-panel');
+  document.getElementById('prp-title').textContent = title;
+  document.getElementById('prp-content').innerHTML = renderMarkdown(content);
+  panel?.classList.remove('hidden');
+  panel?.scrollIntoView({ behavior: 'smooth' });
+}
+
+document.getElementById('btn-prp-close')?.addEventListener('click', () => {
+  document.getElementById('project-response-panel')?.classList.add('hidden');
+});
+
+async function deleteProject(id) {
+  const p = projState.projects.find(x => x.id === id);
+  if (!confirm(`מחק פרויקט "${p?.display_name || id}"?`)) return;
+  await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+  projState.projects = projState.projects.filter(x => x.id !== id);
+  renderProjects();
+}
+
+// ── Project modal ──────────────────────────────────────────────────
+function openProjectModal(project = null) {
+  const modal = document.getElementById('modal-project');
+  document.getElementById('project-modal-title').textContent = project ? 'EDIT PROJECT' : 'NEW PROJECT';
+  document.getElementById('inp-proj-id').value = project?.id || '';
+  document.getElementById('inp-proj-name').value = project?.name || '';
+  document.getElementById('inp-proj-display').value = project?.display_name || '';
+  document.getElementById('inp-proj-phase').value = project?.phase || '';
+  document.getElementById('inp-proj-desc').value = project?.description || '';
+
+  // Populate agent dropdown
+  const sel = document.getElementById('inp-proj-agent');
+  sel.innerHTML = '<option value="">— ללא —</option>';
+  for (const agent of state.agents.values()) {
+    if (agent.type === 'hermes' || agent.type === 'openai' || agent.type === 'generic' || !agent.builtIn) {
+      const opt = document.createElement('option');
+      opt.value = agent.id;
+      opt.textContent = agent.name;
+      if (project?.assigned_agent_id === agent.id) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+
+  const statusSel = document.getElementById('inp-proj-status');
+  if (project?.status) statusSel.value = project.status;
+
+  modal?.classList.remove('hidden');
+  document.getElementById('inp-proj-name').focus();
+}
+
+function closeProjectModal() {
+  document.getElementById('modal-project')?.classList.add('hidden');
+  document.getElementById('form-project')?.reset();
+}
+
+document.getElementById('btn-new-project')?.addEventListener('click', () => openProjectModal());
+document.getElementById('btn-project-modal-close')?.addEventListener('click', closeProjectModal);
+document.getElementById('btn-project-cancel')?.addEventListener('click', closeProjectModal);
+document.getElementById('modal-project')?.addEventListener('click', e => { if (e.target.id === 'modal-project') closeProjectModal(); });
+
+document.getElementById('form-project')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const id = document.getElementById('inp-proj-id').value;
+  const body = {
+    name: document.getElementById('inp-proj-name').value.trim(),
+    display_name: document.getElementById('inp-proj-display').value.trim(),
+    assigned_agent_id: document.getElementById('inp-proj-agent').value || null,
+    phase: document.getElementById('inp-proj-phase').value.trim(),
+    status: document.getElementById('inp-proj-status').value,
+    description: document.getElementById('inp-proj-desc').value.trim(),
+  };
+  if (!body.display_name) body.display_name = body.name;
+
+  const res = await fetch(id ? `/api/projects/${id}` : '/api/projects', {
+    method: id ? 'PUT' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) {
+    const proj = await res.json();
+    if (id) {
+      const idx = projState.projects.findIndex(p => p.id === id);
+      if (idx >= 0) projState.projects[idx] = proj; else projState.projects.push(proj);
+    } else {
+      projState.projects.push(proj);
+    }
+    renderProjects();
+    closeProjectModal();
+  } else {
+    const err = await res.json();
+    alert(err.error || 'Failed to save project');
+  }
+});
+
+// ── Import from Hermes ─────────────────────────────────────────────
+function openImportModal() {
+  const modal = document.getElementById('modal-import');
+  const sel = document.getElementById('inp-import-agent');
+  sel.innerHTML = '';
+  for (const agent of state.agents.values()) {
+    if (agent.type === 'hermes' && (agent.status === 'online')) {
+      const opt = document.createElement('option');
+      opt.value = agent.id;
+      opt.textContent = agent.name;
+      sel.appendChild(opt);
+    }
+  }
+  if (!sel.options.length) {
+    sel.innerHTML = '<option value="">אין סוכני Hermes מחוברים</option>';
+  }
+  document.getElementById('import-status').textContent = '';
+  modal?.classList.remove('hidden');
+}
+
+function closeImportModal() {
+  document.getElementById('modal-import')?.classList.add('hidden');
+}
+
+document.getElementById('btn-import-projects')?.addEventListener('click', openImportModal);
+document.getElementById('btn-import-close')?.addEventListener('click', closeImportModal);
+document.getElementById('btn-import-cancel')?.addEventListener('click', closeImportModal);
+
+document.getElementById('btn-import-run')?.addEventListener('click', async () => {
+  const agentId = document.getElementById('inp-import-agent').value;
+  const query = document.getElementById('inp-import-query').value.trim();
+  const statusEl = document.getElementById('import-status');
+  const btn = document.getElementById('btn-import-run');
+  if (!agentId) { alert('בחר סוכן'); return; }
+
+  btn.disabled = true; btn.textContent = '⏳ מייבא...';
+  statusEl.textContent = 'שולח שאילתה לסוכן...';
+
+  try {
+    // Create a temp project just to use the query endpoint — or call agent directly
+    const res = await fetch(`/api/projects/import-query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId, query }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+
+    // Try to parse JSON from response
+    const text = data.response;
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) throw new Error('לא נמצא JSON בתגובה. תגובת הסוכן:\n' + text.substring(0, 300));
+
+    const items = JSON.parse(jsonMatch[0]);
+    let added = 0;
+    for (const item of items) {
+      if (!item.name) continue;
+      const body = { name: item.name, display_name: item.display_name || item.name, phase: item.phase || '', description: item.description || '', assigned_agent_id: agentId, status: item.status || 'active' };
+      const r = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (r.ok) { const p = await r.json(); projState.projects.push(p); added++; }
+    }
+    statusEl.textContent = `✅ יובאו ${added} פרויקטים`;
+    renderProjects();
+    setTimeout(closeImportModal, 2000);
+  } catch (err) {
+    statusEl.textContent = '❌ ' + err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = '⬇ ייבא';
+  }
+});
+
 // ── Init ───────────────────────────────────────────────────────────
 addLog('AvAgentOS frontend loaded', 'info');
 setBtnSend(false);

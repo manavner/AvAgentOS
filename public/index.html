@@ -45,6 +45,48 @@
     </div>
   </header>
 
+  <!-- VIEW NAV -->
+  <nav id="view-nav">
+    <button class="view-tab active" data-view="mission">⬡ MISSION CONTROL</button>
+    <button class="view-tab" data-view="projects">📋 PROJECTS</button>
+  </nav>
+
+  <!-- PROJECTS VIEW -->
+  <div id="projects-view" class="hidden">
+    <div id="projects-toolbar">
+      <div class="pt-title">📋 PROJECT TRACKER</div>
+      <div class="pt-actions">
+        <button class="pt-btn" id="btn-import-projects">⬇ IMPORT FROM HERMES</button>
+        <button class="pt-btn primary" id="btn-new-project">+ NEW PROJECT</button>
+      </div>
+    </div>
+    <div id="projects-table-wrap">
+      <table id="projects-table">
+        <thead>
+          <tr>
+            <th>PROJECT</th>
+            <th>AGENT</th>
+            <th>PHASE</th>
+            <th>STATUS</th>
+            <th>UPDATED</th>
+            <th>ACTIONS</th>
+          </tr>
+        </thead>
+        <tbody id="projects-tbody"></tbody>
+      </table>
+      <div id="projects-empty" class="hidden">
+        <div class="projects-empty-msg">אין פרויקטים עדיין — לחץ "+ NEW PROJECT" להתחיל</div>
+      </div>
+    </div>
+    <div id="project-response-panel" class="hidden">
+      <div class="prp-header">
+        <span id="prp-title">תגובת סוכן</span>
+        <button id="btn-prp-close">✕</button>
+      </div>
+      <div id="prp-content"></div>
+    </div>
+  </div>
+
   <!-- MAIN GRID -->
   <main id="main-grid">
 
@@ -279,6 +321,80 @@
       <div class="form-actions">
         <button class="btn-secondary" id="btn-discover-cancel">CLOSE</button>
         <button class="btn-primary" id="btn-start-scan">START SCAN</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: PROJECT FORM -->
+  <div id="modal-project" class="hidden">
+    <div id="modal-project-inner">
+      <div class="modal-header">
+        <span class="ph-icon">📋</span>
+        <span id="project-modal-title">NEW PROJECT</span>
+        <button class="modal-close" id="btn-project-modal-close">✕</button>
+      </div>
+      <form id="form-project">
+        <input type="hidden" id="inp-proj-id">
+        <div class="form-row">
+          <label>שם פרויקט *</label>
+          <input type="text" id="inp-proj-name" placeholder="daemon-companion-ai" required autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label>שם תצוגה</label>
+          <input type="text" id="inp-proj-display" placeholder="Daemon Companion AI" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label>סוכן מוקצה</label>
+          <select id="inp-proj-agent"><option value="">— ללא —</option></select>
+        </div>
+        <div class="form-row">
+          <label>שלב (Phase)</label>
+          <input type="text" id="inp-proj-phase" placeholder="Phase 0 — Discovery" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label>סטטוס</label>
+          <select id="inp-proj-status">
+            <option value="active">Active</option>
+            <option value="in_progress">In Progress</option>
+            <option value="blocked">Blocked</option>
+            <option value="done">Done</option>
+            <option value="archived">Archived</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>תיאור</label>
+          <textarea id="inp-proj-desc" rows="3" placeholder="תיאור קצר של הפרויקט..."></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" id="btn-project-cancel">ביטול</button>
+          <button type="submit" class="btn-primary" id="btn-project-save">שמור</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: IMPORT FROM HERMES -->
+  <div id="modal-import" class="hidden">
+    <div id="modal-import-inner">
+      <div class="modal-header">
+        <span class="ph-icon">⬇</span>
+        <span>IMPORT PROJECTS FROM HERMES</span>
+        <button class="modal-close" id="btn-import-close">✕</button>
+      </div>
+      <div style="padding:16px">
+        <div class="form-row">
+          <label>בחר סוכן Hermes</label>
+          <select id="inp-import-agent"></select>
+        </div>
+        <div class="form-row">
+          <label>שאילתה לסוכן</label>
+          <textarea id="inp-import-query" rows="3">תן לי רשימת כל הפרויקטים שלי בפורמט JSON בלבד: [{"name":"...","phase":"...","description":"..."}]</textarea>
+        </div>
+        <div id="import-status" style="margin:8px 0;font-size:12px;color:var(--text-muted)"></div>
+        <div class="form-actions">
+          <button class="btn-secondary" id="btn-import-cancel">ביטול</button>
+          <button class="btn-primary" id="btn-import-run">⬇ ייבא</button>
+        </div>
       </div>
     </div>
   </div>

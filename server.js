@@ -10,7 +10,26 @@ const fetch = require('node-fetch');
 const ObsidianMemory = require('./memory');
 require('dotenv').config();
 
-const AGENTS_FILE = path.join(__dirname, 'agents.json');
+const AGENTS_FILE   = path.join(__dirname, 'agents.json');
+const PROJECTS_FILE = path.join(__dirname, 'projects.json');
+
+// ── Projects store ────────────────────────────────────────────────
+const projects = new Map(); // id → project
+
+function saveProjects() {
+  fs.writeFileSync(PROJECTS_FILE, JSON.stringify([...projects.values()], null, 2));
+}
+
+function loadProjects() {
+  try {
+    if (!fs.existsSync(PROJECTS_FILE)) return;
+    const saved = JSON.parse(fs.readFileSync(PROJECTS_FILE, 'utf8'));
+    for (const p of saved) projects.set(p.id, p);
+    console.log(`  ✓ Loaded ${saved.length} project(s)`);
+  } catch (e) {
+    console.log(`  ⚠ Could not load projects.json: ${e.message}`);
+  }
+}
 
 function saveAgents() {
   const toSave = [...agents.values()].filter(a => !a.builtIn);
@@ -76,8 +95,9 @@ const googleClient = process.env.GOOGLE_API_KEY
   ? new GoogleGenerativeAI(process.env.GOOGLE_API_KEY)
   : null;
 
-// ── Load saved agents (before built-ins) ─────────────────────────
+// ── Load saved agents & projects ─────────────────────────────────
 loadAgents();
+loadProjects();
 
 // ── OpenRouter built-in (if key provided) ────────────────────────
 if (process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_key_here') {
@@ -303,6 +323,131 @@ app.post('/api/onboard', async (req, res) => {
     bridgeEntry,
   });
 });
+
+// ── Projects API ─────────────────────────────────────────────────
+app.get('/api/projects', (req, res) => res.json([...projects.values()]));
+
+app.post('/api/projects', (req, res) => {
+  const { name, display_name, assigned_agent_id, phase, status, description } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const id = `proj_${Date.now()}`;
+  const now = new Date().toISOString();
+  const project = {
+    id, name,
+    display_name: display_name || name,
+    assigned_agent_id: assigned_agent_id || null,
+    phase: phase || '',
+    status: status || 'active',
+    description: description || '',
+    created_at: now,
+    updated_at: now,
+    last_agent_response: '',
+    last_queried_at: null,
+  };
+  projects.set(id, project);
+  saveProjects();
+  syslog(`📋 Project "${name}" created`, 'info');
+  res.json(project);
+});
+
+app.put('/api/projects/:id', (req, res) => {
+  const project = projects.get(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Not found' });
+  const allowed = ['name','display_name','assigned_agent_id','phase','status','description','last_agent_response','last_queried_at'];
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) project[key] = req.body[key];
+  }
+  project.updated_at = new Date().toISOString();
+  saveProjects();
+  res.json(project);
+});
+
+app.delete('/api/projects/:id', (req, res) => {
+  if (!projects.has(req.params.id)) return res.status(404).json({ error: 'Not found' });
+  const name = projects.get(req.params.id).name;
+  projects.delete(req.params.id);
+  saveProjects();
+  syslog(`📋 Project "${name}" deleted`, 'warning');
+  res.json({ success: true });
+});
+
+app.post('/api/projects/:id/query', async (req, res) => {
+  const project = projects.get(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Not found' });
+  const agent = agents.get(project.assigned_agent_id);
+  if (!agent) return res.status(400).json({ error: 'No agent assigned or agent not found' });
+
+  const query = req.body.query || `מה הסטאטוס בפרויקט ${project.name}?`;
+  try {
+    const text = await callAgentDirect(agent, query, { project_id: project.name, topic: project.name });
+    project.last_agent_response = text;
+    project.last_queried_at = new Date().toISOString();
+    project.updated_at = project.last_queried_at;
+    saveProjects();
+    syslog(`📋 Query sent to ${agent.name} for project "${project.name}"`, 'info');
+    res.json({ ok: true, response: text, project });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/projects/import-query', async (req, res) => {
+  const { agentId, query } = req.body;
+  const agent = agents.get(agentId);
+  if (!agent) return res.status(400).json({ error: 'Agent not found' });
+  try {
+    const text = await callAgentDirect(agent, query);
+    res.json({ ok: true, response: text });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Command Envelope ──────────────────────────────────────────────
+function buildEnvelope(sessionContext = {}) {
+  return {
+    envelope_version: '1.0',
+    request_id:  `req_${Date.now()}`,
+    timestamp:   new Date().toISOString(),
+    source:      'avagentos',
+    from_user: {
+      user_id:      process.env.DEFAULT_USER_ID      || '1532243300',
+      display_name: process.env.DEFAULT_USER_NAME    || 'Avner Man',
+      auth_level:   'local_gui_verified',
+    },
+    from_device: {
+      device_id: os.hostname(),
+      hostname:  os.hostname(),
+    },
+    gui_session: {
+      session_id: sessionContext.session_id || null,
+      topic:      sessionContext.topic      || null,
+      project_id: sessionContext.project_id || null,
+    },
+    permissions: {
+      role:              process.env.DEFAULT_USER_ROLE || 'owner',
+      risk_level_allowed: 'write_project',
+    },
+  };
+}
+
+// ── Direct agent call (for REST endpoints) ────────────────────────
+async function callAgentDirect(agent, userMessage, sessionContext = {}) {
+  const baseUrl = agent.host.startsWith('http')
+    ? agent.host.replace(/\/$/, '')
+    : `http://${agent.host}:${agent.port}`;
+  const defaultEndpoint = (agent.type === 'hermes' || agent.type === 'openrouter')
+    ? '/api/v1/chat/completions' : '/v1/chat/completions';
+  const endpoint = agent.config?.chatEndpoint || defaultEndpoint;
+  const envelope = buildEnvelope(sessionContext);
+  const body = { model: agent.config?.model || 'default', messages: [{ role: 'user', content: userMessage }], stream: false, user: JSON.stringify(envelope) };
+  const headers = { 'Content-Type': 'application/json' };
+  if (agent.apiKey?.trim()) headers['Authorization'] = `Bearer ${agent.apiKey}`;
+  const res = await fetch(`${baseUrl}${endpoint}`, { method: 'POST', headers, body: JSON.stringify(body), timeout: 90000 });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || data.message || data.response || JSON.stringify(data);
+}
 
 // ── Inbox — agents push messages here ────────────────────────────
 app.post('/api/inbox', (req, res) => {
@@ -560,9 +705,12 @@ async function handleAgent(socket, agentId, userMessage) {
     // Hermes dashboard uses provider name as model, or pass-through to openrouter/openai-codex
     const defaultModel = agent.type === 'hermes' ? 'openai-codex' : 'default';
 
+    // Build identity envelope — hardcoded now, will come from session/auth in future
+    const envelope = buildEnvelope({ project_id: null });
+
     let body;
     if (fmt === 'openai') {
-      body = { model: agent.config?.model || defaultModel, messages: history, stream: false };
+      body = { model: agent.config?.model || defaultModel, messages: history, stream: false, user: JSON.stringify(envelope) };
     } else if (fmt === 'anthropic') {
       body = { messages: history, max_tokens: 2048 };
     } else if (fmt === 'simple') {
