@@ -8,6 +8,7 @@ const AGENT_ICONS = {
   openclaw: '🦅',
   ollama:   '🦙',
   openai:   '🧠',
+  openrouter:'🧭',
   generic:  '🔌',
 };
 const AGENT_COLORS = {
@@ -17,19 +18,26 @@ const AGENT_COLORS = {
   openclaw: '#10b981',
   ollama:   '#a855f7',
   openai:   '#22d3ee',
+  openrouter:'#8b5cf6',
   generic:  '#64748b',
 };
+const LLM_TYPES = new Set(['claude', 'gemini', 'openai', 'openrouter', 'ollama']);
 
 // ── State ──────────────────────────────────────────────────────────
 const state = {
   agents: new Map(),
-  activeAgentId: 'claude',
+  activeAgentId: null,
   chats: new Map(),         // agentId → [{role, content, ts}]
   totalMsgs: 0,
   logFilter: 'all',
   streaming: false,
   streamBuffer: '',
+  responseTimer: null,
   logEntries: [],
+  display: {
+    fontSize: Number(localStorage.getItem('avagentos.chatFontSize')) || 13,
+    textDir: localStorage.getItem('avagentos.textDir') || 'auto',
+  },
 };
 
 // ── DOM ────────────────────────────────────────────────────────────
@@ -42,11 +50,13 @@ const el = {
   detailContent: $('detail-content'),
   logEntries:    $('log-entries'),
   chatInput:     $('chat-input'),
+  fontSizeLabel: $('font-size-label'),
   btnSend:       $('btn-send'),
   typingIndicator: $('typing-indicator'),
   tiName:        $('ti-name'),
   activeAgentLabel: $('active-agent-label'),
   valAgents:     $('val-agents'),
+  valLlms:       $('val-llms'),
   valOnline:     $('val-online'),
   valMsgs:       $('val-msgs'),
   connBadge:     $('conn-badge'),
@@ -78,10 +88,21 @@ socket.on('state:init', ({ agents, hasClaudeKey }) => {
   renderTabs();
   renderDetailTabs();
   updateMetrics();
+  setActiveAgent(pickDefaultAgentId());
   if (!hasClaudeKey) {
     addLog('ANTHROPIC_API_KEY not set — copy .env.example to .env', 'warning');
   }
 });
+
+function pickDefaultAgentId() {
+  const agents = [...state.agents.values()];
+  return agents.find(a => a.status === 'online' && a.type === 'hermes' && /deamon|local/i.test(`${a.name} ${a.id}`))?.id
+    || agents.find(a => a.status === 'online' && a.type === 'hermes')?.id
+    || agents.find(a => a.status === 'online')?.id
+    || agents.find(a => a.status === 'no-key')?.id
+    || agents[0]?.id
+    || null;
+}
 
 socket.on('agent:added', agent => {
   state.agents.set(agent.id, agent);
@@ -118,6 +139,15 @@ socket.on('chat:stream:start', ({ agentId }) => {
   if (agentId !== state.activeAgentId) return;
   state.streaming = true;
   state.streamBuffer = '';
+  clearResponseTimer();
+  state.responseTimer = setTimeout(() => {
+    if (!state.streaming) return;
+    state.streaming = false;
+    el.typingIndicator.classList.add('hidden');
+    removeStreamBubble();
+    appendSystemMsg('Timeout: לא התקבלה תשובה מהסוכן בזמן. אפשר לשלוח שוב או לבדוק שהסוכן Online.');
+    setBtnSend(!!el.chatInput.value.trim());
+  }, 185000);
   const agent = state.agents.get(agentId);
   el.tiName.textContent = agent?.name || agentId;
   el.typingIndicator.classList.remove('hidden');
@@ -132,6 +162,7 @@ socket.on('chat:stream:delta', ({ agentId, delta }) => {
 
 socket.on('chat:stream:end', ({ agentId, fullText }) => {
   state.streaming = false;
+  clearResponseTimer();
   el.typingIndicator.classList.add('hidden');
   removeStreamBubble();
 
@@ -148,15 +179,16 @@ socket.on('chat:stream:end', ({ agentId, fullText }) => {
     appendMessage('agent', fullText, agent?.name || agentId);
   }
 
-  setBtnSend(true);
+  setBtnSend(!!el.chatInput.value.trim());
   updateDetailContent();
 });
 
 socket.on('chat:error', ({ agentId, error }) => {
   state.streaming = false;
+  clearResponseTimer();
   el.typingIndicator.classList.add('hidden');
   removeStreamBubble();
-  setBtnSend(true);
+  setBtnSend(!!el.chatInput.value.trim());
   if (agentId === state.activeAgentId) {
     appendSystemMsg(`Error: ${error}`);
   }
@@ -250,9 +282,23 @@ socket.on('discover:done', ({ found }) => {
 // ── Rendering ──────────────────────────────────────────────────────
 function renderAgentList() {
   el.agentList.innerHTML = '';
-  for (const agent of state.agents.values()) {
-    el.agentList.appendChild(buildAgentCard(agent));
+  const allAgents = [...state.agents.values()];
+  const agents = uniqueAgentsForDisplay(allAgents.filter(a => !isLlmAgent(a)));
+  const llms = uniqueAgentsForDisplay(allAgents.filter(isLlmAgent));
+
+  appendAgentSection('AGENTS', agents);
+  appendAgentSection('LLMS', llms);
+}
+
+function appendAgentSection(title, agents) {
+  if (!agents.length) return;
+  const section = document.createElement('div');
+  section.className = 'agent-list-section';
+  section.innerHTML = `<div class="agent-section-title">${escHtml(title)}</div>`;
+  for (const agent of agents) {
+    section.appendChild(buildAgentCard(agent));
   }
+  el.agentList.appendChild(section);
 }
 
 function buildAgentCard(agent) {
@@ -265,13 +311,16 @@ function buildAgentCard(agent) {
 
   const statusLabel = { online: 'ONLINE', offline: 'OFFLINE', connecting: 'CONNECTING', error: 'ERROR', 'no-key': 'NO KEY' };
   const latencyStr = agent.latency ? `${agent.latency}ms` : '—';
+  const displayName = getAgentDisplayName(agent);
+  const categoryLabel = isLlmAgent(agent) ? 'LLM' : 'AGENT';
+  const subtype = agent.type ? agent.type.toUpperCase() : 'GENERIC';
 
   card.innerHTML = `
     <div class="agent-card-top">
       <div class="agent-avatar">${AGENT_ICONS[agent.type] || '🔌'}</div>
       <div class="agent-info">
-        <div class="agent-name">${escHtml(agent.name)}</div>
-        <div class="agent-type">${agent.type.toUpperCase()}</div>
+        <div class="agent-name">${escHtml(displayName)}</div>
+        <div class="agent-type">${categoryLabel} · ${subtype}</div>
       </div>
     </div>
     <div class="agent-status">
@@ -279,7 +328,7 @@ function buildAgentCard(agent) {
       <span class="agent-status-text">${statusLabel[agent.status] || agent.status.toUpperCase()}</span>
     </div>
     <div class="agent-meta">
-      <span>${agent.builtIn ? agent.model || '' : (agent.host ? `${agent.host}:${agent.port}` : '')}</span>
+      <span>${escHtml(agent.builtIn ? agent.model || '' : (agent.host ? `${agent.host}:${agent.port}` : ''))}</span>
       <span class="agent-latency">${latencyStr}</span>
     </div>
     <div class="agent-actions">
@@ -306,11 +355,11 @@ function updateAgentCard(id) {
 
 function renderTabs() {
   el.agentTabsBar.innerHTML = '';
-  for (const agent of state.agents.values()) {
+  for (const agent of uniqueAgentsForDisplay([...state.agents.values()])) {
     const tab = document.createElement('div');
     tab.className = `chat-tab${agent.id === state.activeAgentId ? ' active' : ''}`;
     tab.dataset.id = agent.id;
-    tab.innerHTML = `<span class="tab-dot"></span>${escHtml(agent.name)}`;
+    tab.innerHTML = `<span class="tab-dot"></span>${escHtml(getAgentDisplayName(agent))}`;
     tab.addEventListener('click', () => setActiveAgent(agent.id));
     el.agentTabsBar.appendChild(tab);
   }
@@ -318,11 +367,11 @@ function renderTabs() {
 
 function renderDetailTabs() {
   el.detailTabs.innerHTML = '';
-  for (const agent of state.agents.values()) {
+  for (const agent of uniqueAgentsForDisplay([...state.agents.values()])) {
     const tab = document.createElement('div');
     tab.className = `detail-tab${agent.id === state.activeAgentId ? ' active' : ''}`;
     tab.dataset.id = agent.id;
-    tab.textContent = agent.name.toUpperCase();
+    tab.textContent = getAgentDisplayName(agent).toUpperCase();
     tab.addEventListener('click', () => setActiveAgent(agent.id));
     el.detailTabs.appendChild(tab);
   }
@@ -346,12 +395,16 @@ function renderChat(agentId) {
 }
 
 function setActiveAgent(id) {
+  if (!id) return;
   state.activeAgentId = id;
   const agent = state.agents.get(id);
   if (!agent) return;
 
   // Update header
-  el.activeAgentLabel.textContent = `${agent.name.toUpperCase()} — MISSION CONTROL`;
+  const statusLabel = agent.status === 'online' ? 'READY' : agent.status.toUpperCase();
+  const displayName = getAgentDisplayName(agent);
+  el.activeAgentLabel.textContent = `${displayName.toUpperCase()} — ${statusLabel}`;
+  el.chatInput.placeholder = `שלח הנחיה אל ${displayName} — התשובה תופיע כאן במרכז`;
 
   // Update tabs
   el.agentTabsBar.querySelectorAll('.chat-tab').forEach(t => t.classList.toggle('active', t.dataset.id === id));
@@ -375,8 +428,8 @@ function updateDetailContent() {
 
   el.detailContent.innerHTML = `
     <div class="detail-block">
-      <div class="detail-label">AGENT</div>
-      <div class="detail-value">${escHtml(agent.name)}</div>
+      <div class="detail-label">${isLlmAgent(agent) ? 'LLM' : 'AGENT'}</div>
+      <div class="detail-value">${escHtml(getAgentDisplayName(agent))}</div>
     </div>
     <div class="detail-block">
       <div class="detail-label">STATUS</div>
@@ -384,7 +437,7 @@ function updateDetailContent() {
     </div>
     <div class="detail-block">
       <div class="detail-label">TYPE</div>
-      <div class="detail-value">${agent.type.toUpperCase()}</div>
+      <div class="detail-value">${(agent.type || 'generic').toUpperCase()}</div>
     </div>
     ${agent.model ? `<div class="detail-block"><div class="detail-label">MODEL</div><div class="detail-value">${agent.model}</div></div>` : ''}
     ${!agent.builtIn ? `<div class="detail-block"><div class="detail-label">HOST</div><div class="detail-value">${agent.host}:${agent.port}</div></div>` : ''}
@@ -417,6 +470,7 @@ function appendMessage(role, content, senderName) {
     </div>
     <div class="msg-bubble">${rendered}</div>
   `;
+  applyDirectionToNode(div.querySelector('.msg-bubble'));
   el.chatMessages.appendChild(div);
   el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
 
@@ -428,6 +482,7 @@ function appendSystemMsg(text) {
   const div = document.createElement('div');
   div.className = 'msg msg-system';
   div.innerHTML = `<div class="msg-bubble">${escHtml(text)}</div>`;
+  applyDirectionToNode(div.querySelector('.msg-bubble'));
   el.chatMessages.appendChild(div);
   el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
 }
@@ -449,6 +504,7 @@ function updateStreamBubble(text) {
   }
   const bubble = streamBubble.querySelector('.msg-bubble');
   bubble.innerHTML = renderMarkdown(text);
+  applyDirectionToNode(bubble);
   bubble.classList.add('streaming-cursor');
   el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
 }
@@ -457,6 +513,13 @@ function removeStreamBubble() {
   if (streamBubble) {
     streamBubble.querySelector('.msg-bubble')?.classList.remove('streaming-cursor');
     streamBubble = null;
+  }
+}
+
+function clearResponseTimer() {
+  if (state.responseTimer) {
+    clearTimeout(state.responseTimer);
+    state.responseTimer = null;
   }
 }
 
@@ -491,11 +554,14 @@ function hideWelcome() {
 
 function showWelcome() {
   if (!el.chatMessages.querySelector('.welcome-screen')) {
+    const agent = state.agents.get(state.activeAgentId);
+    const target = agent?.name || 'סוכן';
     el.chatMessages.innerHTML = `
       <div id="welcome-msg" class="welcome-screen">
         <div class="welcome-logo">AV<br>AGENT<br>OS</div>
         <div class="welcome-text">Mission Control Online</div>
-        <div class="welcome-sub">Begin your mission</div>
+        <div class="welcome-sub">נבחר: ${escHtml(target)}</div>
+        <div class="welcome-sub">כתוב למטה ולחץ TRANSMIT — התגובה תופיע כאן</div>
       </div>
     `;
   }
@@ -551,9 +617,12 @@ function filterLogs(level) {
 
 // ── Metrics ────────────────────────────────────────────────────────
 function updateMetrics() {
-  const total = state.agents.size;
-  const online = [...state.agents.values()].filter(a => a.status === 'online' || a.status === 'no-key').length;
-  el.valAgents.textContent = total;
+  const allAgents = [...state.agents.values()];
+  const agentCount = uniqueAgentsForDisplay(allAgents.filter(a => !isLlmAgent(a))).length;
+  const llmCount = uniqueAgentsForDisplay(allAgents.filter(isLlmAgent)).length;
+  const online = allAgents.filter(a => a.status === 'online' || a.status === 'no-key').length;
+  el.valAgents.textContent = agentCount;
+  if (el.valLlms) el.valLlms.textContent = llmCount;
   el.valOnline.textContent = online;
 }
 
@@ -720,6 +789,51 @@ $('btn-onboard-submit').addEventListener('click', async () => {
   }
 });
 
+// ── Display controls ────────────────────────────────────────────────
+function clampFontSize(size) {
+  return Math.max(11, Math.min(24, Number(size) || 13));
+}
+
+function setChatFontSize(size) {
+  state.display.fontSize = clampFontSize(size);
+  document.documentElement.style.setProperty('--chat-font-size', `${state.display.fontSize}px`);
+  localStorage.setItem('avagentos.chatFontSize', String(state.display.fontSize));
+  if (el.fontSizeLabel) el.fontSizeLabel.textContent = `${state.display.fontSize}px`;
+}
+
+function applyDirectionToNode(node) {
+  if (!node) return;
+  const dir = state.display.textDir;
+  if (dir === 'rtl' || dir === 'ltr') node.setAttribute('dir', dir);
+  else node.setAttribute('dir', 'auto');
+}
+
+function setTextDirection(dir) {
+  state.display.textDir = ['rtl', 'ltr', 'auto'].includes(dir) ? dir : 'auto';
+  localStorage.setItem('avagentos.textDir', state.display.textDir);
+  document.body.classList.toggle('text-dir-rtl', state.display.textDir === 'rtl');
+  document.body.classList.toggle('text-dir-ltr', state.display.textDir === 'ltr');
+  document.body.classList.toggle('text-dir-auto', state.display.textDir === 'auto');
+  applyDirectionToNode(el.chatInput);
+  document.querySelectorAll('.msg-bubble, #prp-content').forEach(applyDirectionToNode);
+  ['rtl', 'ltr', 'auto'].forEach(mode => {
+    document.getElementById(`btn-dir-${mode}`)?.classList.toggle('active', state.display.textDir === mode);
+  });
+}
+
+function initDisplayControls() {
+  setChatFontSize(state.display.fontSize);
+  setTextDirection(state.display.textDir);
+  $('btn-font-dec')?.addEventListener('click', () => setChatFontSize(state.display.fontSize - 1));
+  $('btn-font-inc')?.addEventListener('click', () => setChatFontSize(state.display.fontSize + 1));
+  $('btn-font-reset')?.addEventListener('click', () => setChatFontSize(13));
+  $('btn-dir-rtl')?.addEventListener('click', () => setTextDirection('rtl'));
+  $('btn-dir-ltr')?.addEventListener('click', () => setTextDirection('ltr'));
+  $('btn-dir-auto')?.addEventListener('click', () => setTextDirection('auto'));
+}
+
+initDisplayControls();
+
 // ── Input handling ─────────────────────────────────────────────────
 el.chatInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -729,7 +843,7 @@ el.chatInput.addEventListener('keydown', e => {
 });
 el.chatInput.addEventListener('input', () => {
   el.chatInput.style.height = 'auto';
-  el.chatInput.style.height = Math.min(el.chatInput.scrollHeight, 120) + 'px';
+  el.chatInput.style.height = Math.min(el.chatInput.scrollHeight, 88) + 'px';
   setBtnSend(!!el.chatInput.value.trim() && !state.streaming);
 });
 el.btnSend.addEventListener('click', sendMessage);
@@ -816,6 +930,57 @@ setInterval(updateClock, 1000);
 })();
 
 // ── Helpers ────────────────────────────────────────────────────────
+function isLlmAgent(agent) {
+  if (!agent) return false;
+  return LLM_TYPES.has(String(agent.type || '').toLowerCase()) || agent.category === 'llm' || agent.kind === 'llm';
+}
+
+function getAgentDisplayName(agent) {
+  if (!agent) return '';
+  return String(
+    agent.nickname ||
+    agent.alias ||
+    agent.display_name ||
+    agent.displayName ||
+    agent.config?.nickname ||
+    agent.config?.alias ||
+    agent.name ||
+    agent.id ||
+    'Agent'
+  ).trim();
+}
+
+function getAgentDisplayKey(agent) {
+  return `${isLlmAgent(agent) ? 'llm' : 'agent'}:${getAgentDisplayName(agent).toLowerCase()}`;
+}
+
+function uniqueAgentsForDisplay(agents) {
+  const seen = new Set();
+  const unique = [];
+  for (const agent of agents) {
+    const key = getAgentDisplayKey(agent);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(agent);
+  }
+  return unique;
+}
+
+function appendAgentOptions(selectEl, label, agents, selectedId) {
+  const list = uniqueAgentsForDisplay(agents);
+  if (!list.length) return;
+  const group = document.createElement('optgroup');
+  group.label = label;
+  for (const agent of list) {
+    const opt = document.createElement('option');
+    opt.value = agent.id;
+    opt.textContent = getAgentDisplayName(agent);
+    if (selectedId === agent.id) opt.selected = true;
+    group.appendChild(opt);
+  }
+  selectEl.appendChild(group);
+}
+
 function escHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -1046,7 +1211,9 @@ async function askAgent(projectId) {
 function showResponsePanel(title, content) {
   const panel = document.getElementById('project-response-panel');
   document.getElementById('prp-title').textContent = title;
-  document.getElementById('prp-content').innerHTML = renderMarkdown(content);
+  const contentEl = document.getElementById('prp-content');
+  contentEl.innerHTML = renderMarkdown(content);
+  applyDirectionToNode(contentEl);
   panel?.classList.remove('hidden');
   panel?.scrollIntoView({ behavior: 'smooth' });
 }
@@ -1073,18 +1240,12 @@ function openProjectModal(project = null) {
   document.getElementById('inp-proj-phase').value = project?.phase || '';
   document.getElementById('inp-proj-desc').value = project?.description || '';
 
-  // Populate agent dropdown
+  // Populate agent dropdown. Keep real agents and LLMs separate, both selectable.
   const sel = document.getElementById('inp-proj-agent');
   sel.innerHTML = '<option value="">— ללא —</option>';
-  for (const agent of state.agents.values()) {
-    if (agent.type === 'hermes' || agent.type === 'openai' || agent.type === 'generic' || !agent.builtIn) {
-      const opt = document.createElement('option');
-      opt.value = agent.id;
-      opt.textContent = agent.name;
-      if (project?.assigned_agent_id === agent.id) opt.selected = true;
-      sel.appendChild(opt);
-    }
-  }
+  const allSelectableAgents = [...state.agents.values()];
+  appendAgentOptions(sel, 'AGENTS', allSelectableAgents.filter(a => !isLlmAgent(a)), project?.assigned_agent_id);
+  appendAgentOptions(sel, 'LLMS', allSelectableAgents.filter(isLlmAgent), project?.assigned_agent_id);
 
   const statusSel = document.getElementById('inp-proj-status');
   if (project?.status) statusSel.value = project.status;

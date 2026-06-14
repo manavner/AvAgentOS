@@ -14,10 +14,42 @@
     },
     {
       "id": "cheapworker",
-      "container": "hermes-gateway",
-      "profile": "cheapworker",
-      "bin": "/opt/hermes/.venv/bin/hermes",
-      "description": "Hermes cheapworker - Qwen3 Coder Flash",
+      "type": "local",
+      "container": null,
+      "profile": "cheap_buddy",
+      "bin": "/home/deamond_1/.local/bin/hermes",
+      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "description": "Hermes cheap_buddy profile (legacy id: cheapworker)",
+      "default_user": "avner"
+    },
+    {
+      "id": "cheap_buddy",
+      "type": "local",
+      "container": null,
+      "profile": "cheap_buddy",
+      "bin": "/home/deamond_1/.local/bin/hermes",
+      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "description": "Hermes cheap_buddy profile",
+      "default_user": "avner"
+    },
+    {
+      "id": "deamon-1",
+      "type": "local",
+      "container": null,
+      "profile": null,
+      "bin": "/home/deamond_1/.local/bin/hermes",
+      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "description": "Deamon-1 native WSL Hermes agent",
+      "default_user": "avner"
+    },
+    {
+      "id": "avneraibuddy",
+      "type": "local",
+      "container": null,
+      "profile": null,
+      "bin": "/home/deamond_1/.local/bin/hermes",
+      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "description": "AvnerAIBuddy alias to local Hermes",
       "default_user": "avner"
     }
   ]

@@ -22,7 +22,7 @@ from typing import List, Optional
 
 # ── Config ────────────────────────────────────────────────────────
 PORT        = int(os.getenv("PORT",    "8765"))
-TIMEOUT     = int(os.getenv("TIMEOUT", "60"))
+TIMEOUT     = int(os.getenv("TIMEOUT", "180"))
 SILENCE     = float(os.getenv("SILENCE", "3.0"))
 HERMES_BIN  = os.getenv("HERMES_BIN",  "/opt/hermes/.venv/bin/hermes")
 CONFIG_FILE = Path(os.getenv("AGENTS_CONFIG", "agents_config.json"))

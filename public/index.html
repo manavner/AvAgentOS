@@ -26,6 +26,10 @@
         <span class="metric-val" id="val-agents">1</span>
         <span class="metric-label">AGENTS</span>
       </div>
+      <div class="sys-metric" id="metric-llms">
+        <span class="metric-val" id="val-llms">0</span>
+        <span class="metric-label">LLMS</span>
+      </div>
       <div class="sys-metric" id="metric-online">
         <span class="metric-val" id="val-online">0</span>
         <span class="metric-label">ONLINE</span>
@@ -131,6 +135,13 @@
         <span class="ph-icon">▶</span>
         <span id="active-agent-label">CLAUDE — MISSION CONTROL</span>
         <div class="mc-controls">
+          <button class="mc-btn" id="btn-font-dec" title="הקטן אותיות">A−</button>
+          <span class="mc-readout" id="font-size-label" title="גודל אותיות נוכחי">13px</span>
+          <button class="mc-btn" id="btn-font-inc" title="הגדל אותיות">A+</button>
+          <button class="mc-btn" id="btn-font-reset" title="איפוס גודל אותיות">A=</button>
+          <button class="mc-btn" id="btn-dir-rtl" title="יישור לימין / עברית">ימין</button>
+          <button class="mc-btn" id="btn-dir-ltr" title="יישור לשמאל / English">LEFT</button>
+          <button class="mc-btn active" id="btn-dir-auto" title="זיהוי כיוון אוטומטי">AUTO</button>
           <button class="mc-btn" id="btn-broadcast" title="Broadcast to all online agents">⊕ BROADCAST</button>
           <button class="mc-btn" id="btn-clear-chat" title="Clear chat">⌫</button>
         </div>

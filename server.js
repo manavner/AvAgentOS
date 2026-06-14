@@ -443,7 +443,7 @@ async function callAgentDirect(agent, userMessage, sessionContext = {}) {
   const body = { model: agent.config?.model || 'default', messages: [{ role: 'user', content: userMessage }], stream: false, user: JSON.stringify(envelope) };
   const headers = { 'Content-Type': 'application/json' };
   if (agent.apiKey?.trim()) headers['Authorization'] = `Bearer ${agent.apiKey}`;
-  const res = await fetch(`${baseUrl}${endpoint}`, { method: 'POST', headers, body: JSON.stringify(body), timeout: 90000 });
+  const res = await fetch(`${baseUrl}${endpoint}`, { method: 'POST', headers, body: JSON.stringify(body), timeout: 180000 });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   return data.choices?.[0]?.message?.content || data.message || data.response || JSON.stringify(data);
@@ -727,7 +727,7 @@ async function handleAgent(socket, agentId, userMessage) {
 
     const res = await fetch(`${baseUrl}${endpoint}`, {
       method: 'POST', headers, body: JSON.stringify(body),
-      timeout: 90000,
+      timeout: 180000,
     });
 
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
