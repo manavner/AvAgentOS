@@ -63,6 +63,81 @@ app.use(express.static(path.join(__dirname, 'public')));
 const agents = new Map();
 const histories = new Map();
 
+const DEFAULT_BRIDGE_HOST = process.env.HERMES_BRIDGE_HOST || '127.0.0.1';
+const DEFAULT_BRIDGE_PORT = Number(process.env.HERMES_BRIDGE_PORT || 8765);
+
+function bridgeHostedAgent({ id, name, bridgeId, description, role, riskLevel, capabilities }) {
+  return {
+    id,
+    name,
+    type: 'hermes',
+    host: DEFAULT_BRIDGE_HOST,
+    port: DEFAULT_BRIDGE_PORT,
+    apiKey: null,
+    config: {
+      format: 'openai',
+      model: bridgeId,
+      chatEndpoint: `/agent/${bridgeId}/api/v1/chat/completions`,
+      healthEndpoint: `/agent/${bridgeId}/health`,
+      bridgeAgentId: bridgeId,
+    },
+    status: 'connecting',
+    description,
+    icon: 'hermes',
+    builtIn: false,
+    managedBy: 'avagentos-default-registry',
+    role,
+    riskLevel,
+    capabilities,
+    connectedAt: Date.now(),
+    messageCount: 0,
+    latency: null,
+  };
+}
+
+const DEFAULT_LOCAL_AGENTS = [
+  bridgeHostedAgent({
+    id: 'cheap_buddy',
+    name: 'Cheap Worker',
+    bridgeId: 'cheap_buddy',
+    description: 'Low-cost Hermes worker profile on Deamon-1 (legacy alias: cheapworker)',
+    role: 'cost-efficient worker for simple coding, summaries, and routine tasks',
+    riskLevel: 'write_project',
+    capabilities: {
+      provider: 'openrouter',
+      cost_tier: 'low',
+      languages: ['he', 'en'],
+      skills: ['routine-code', 'summaries', 'tool-use', 'workspace-tasks'],
+      can_stream: false,
+      can_use_tools: true,
+    },
+  }),
+  bridgeHostedAgent({
+    id: 'reviewer',
+    name: 'Reviewer Agent',
+    bridgeId: 'reviewer',
+    description: 'Hermes reviewer profile for code, plans, and risk checks',
+    role: 'read-only code and plan review before commits or higher-risk changes',
+    riskLevel: 'read_only',
+    capabilities: {
+      provider: 'configured-by-hermes-profile',
+      cost_tier: 'medium',
+      languages: ['he', 'en'],
+      skills: ['code-review', 'plan-review', 'security-review', 'risk-checks'],
+      can_stream: false,
+      can_use_tools: true,
+    },
+  }),
+];
+
+function seedDefaultLocalAgents() {
+  for (const agent of DEFAULT_LOCAL_AGENTS) {
+    if (agents.has(agent.id)) continue;
+    agents.set(agent.id, { ...agent, connectedAt: Date.now() });
+    histories.set(agent.id, []);
+  }
+}
+
 // ── Obsidian Memory ──────────────────────────────────────────────
 const memory = new ObsidianMemory(
   process.env.OBSIDIAN_VAULT_PATH,
@@ -151,14 +226,20 @@ agents.set('gemini', {
 });
 histories.set('gemini', []);
 
+seedDefaultLocalAgents();
+
 // ── REST API ─────────────────────────────────────────────────────
 app.get('/api/agents', (req, res) => res.json([...agents.values()]));
+app.get('/api/agent-contracts', (req, res) => res.json({ agents: DEFAULT_LOCAL_AGENTS }));
 
 app.post('/api/agents', async (req, res) => {
-  const { name, type, host, port, apiKey, config } = req.body;
+  const { id: requestedId, name, type, host, port, apiKey, config, role, riskLevel, capabilities } = req.body;
   if (!name || !host) return res.status(400).json({ error: 'name and host required' });
 
-  const id = `agent_${Date.now()}`;
+  const id = requestedId
+    ? String(requestedId).toLowerCase().replace(/[^a-z0-9_-]/g, '-')
+    : `agent_${Date.now()}`;
+  if (agents.has(id)) return res.status(409).json({ error: `agent id already exists: ${id}` });
   const agent = {
     id, name,
     type: (type || 'generic').toLowerCase(),
@@ -169,6 +250,9 @@ app.post('/api/agents', async (req, res) => {
     description: `${type || 'Agent'} at ${host}:${port || 8080}`,
     icon: type?.toLowerCase() || 'generic',
     builtIn: false,
+    role: role || null,
+    riskLevel: riskLevel || 'approval_required',
+    capabilities: capabilities || null,
     connectedAt: Date.now(),
     messageCount: 0,
     latency: null,
@@ -768,9 +852,15 @@ async function pingAgent(agentId) {
     });
     clearTimeout(timer);
     const latency = Date.now() - start;
+    const data = await res.json().catch(() => ({}));
     agent.status = res.ok ? 'online' : 'error';
     agent.latency = latency;
     agent.lastPing = Date.now();
+    if (data.capabilities) agent.capabilities = { ...(agent.capabilities || {}), ...data.capabilities };
+    if (data.config?.capabilities) agent.capabilities = { ...(agent.capabilities || {}), ...data.config.capabilities };
+    if (data.agent && !agent.config?.bridgeAgentId) {
+      agent.config = { ...(agent.config || {}), bridgeAgentId: data.agent };
+    }
     io.emit('agent:status', { id: agentId, status: agent.status, latency });
     return latency;
   } catch {

@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 # ── Config ────────────────────────────────────────────────────────
 PORT        = int(os.getenv("PORT",    "8765"))
@@ -48,12 +48,16 @@ class ChatRequest(BaseModel):
     user:        Optional[str]   = None  # user identity — injected by AvAgentOS
 
 class AgentDef(BaseModel):
-    id:          str
-    container:   Optional[str] = None   # None for local agents
-    type:        Optional[str] = "docker"  # "docker" | "local"
-    profile:     Optional[str] = None
-    bin:         Optional[str] = None
-    description: Optional[str] = ""
+    id:            str
+    container:     Optional[str] = None   # None for local agents
+    type:          Optional[str] = "docker"  # "docker" | "local"
+    profile:       Optional[str] = None
+    bin:           Optional[str] = None
+    cwd:           Optional[str] = None
+    description:   Optional[str] = ""
+    default_user:  Optional[str] = None
+    user_profiles: Optional[Dict[str, Optional[str]]] = None
+    capabilities:  Optional[Dict[str, Any]] = None
 
 # ── Agent registry ────────────────────────────────────────────────
 _agents: dict   = {}   # id → dict
@@ -324,7 +328,14 @@ def agent_health(agent_id: str):
         agent = _agents.get(agent_id)
     if not agent:
         raise HTTPException(404, f"Agent '{agent_id}' not found")
-    return {"status": "ok", "agent": agent_id, "config": agent}
+    return {
+        "status": "ok",
+        "agent": agent_id,
+        "name": agent.get("description") or agent_id,
+        "version": "3.0.0",
+        "capabilities": agent.get("capabilities", {}),
+        "config": agent,
+    }
 
 # ── Models list ───────────────────────────────────────────────────
 @app.get("/v1/models")

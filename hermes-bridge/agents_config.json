@@ -10,6 +10,15 @@
       "user_profiles": {
         "avner": null,
         "admin": null
+      },
+      "capabilities": {
+        "provider": "configured-by-hermes-profile",
+        "cost_tier": "high",
+        "languages": ["he", "en"],
+        "skills": ["orchestration", "planning", "tool-use", "workspace-tasks"],
+        "can_stream": false,
+        "can_use_tools": true,
+        "description": "Main Hermes agent (default profile)"
       }
     },
     {
@@ -19,8 +28,17 @@
       "profile": "cheap_buddy",
       "bin": "/home/deamond_1/.local/bin/hermes",
       "cwd": "/home/deamond_1/AI-Agents-Workspace",
-      "description": "Hermes cheap_buddy profile (legacy id: cheapworker)",
-      "default_user": "avner"
+      "description": "Legacy alias for Hermes cheap_buddy profile",
+      "default_user": "avner",
+      "capabilities": {
+        "provider": "openrouter",
+        "cost_tier": "low",
+        "languages": ["he", "en"],
+        "skills": ["routine-code", "summaries", "tool-use", "workspace-tasks"],
+        "can_stream": false,
+        "can_use_tools": true,
+        "description": "Hermes cheap_buddy profile (legacy id: cheapworker)"
+      }
     },
     {
       "id": "cheap_buddy",
@@ -30,7 +48,35 @@
       "bin": "/home/deamond_1/.local/bin/hermes",
       "cwd": "/home/deamond_1/AI-Agents-Workspace",
       "description": "Hermes cheap_buddy profile",
-      "default_user": "avner"
+      "default_user": "avner",
+      "capabilities": {
+        "provider": "openrouter",
+        "cost_tier": "low",
+        "languages": ["he", "en"],
+        "skills": ["routine-code", "summaries", "tool-use", "workspace-tasks"],
+        "can_stream": false,
+        "can_use_tools": true,
+        "description": "Low-cost Hermes worker profile on Deamon-1"
+      }
+    },
+    {
+      "id": "reviewer",
+      "type": "local",
+      "container": null,
+      "profile": "reviewer",
+      "bin": "/home/deamond_1/.local/bin/hermes",
+      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "description": "Hermes reviewer profile for code, plan, and risk review",
+      "default_user": "avner",
+      "capabilities": {
+        "provider": "configured-by-hermes-profile",
+        "cost_tier": "medium",
+        "languages": ["he", "en"],
+        "skills": ["code-review", "plan-review", "security-review", "risk-checks"],
+        "can_stream": false,
+        "can_use_tools": true,
+        "description": "Reviewer profile for read-only checks before commits or higher-risk changes"
+      }
     },
     {
       "id": "deamon-1",
@@ -40,7 +86,16 @@
       "bin": "/home/deamond_1/.local/bin/hermes",
       "cwd": "/home/deamond_1/AI-Agents-Workspace",
       "description": "Deamon-1 native WSL Hermes agent",
-      "default_user": "avner"
+      "default_user": "avner",
+      "capabilities": {
+        "provider": "configured-by-default-profile",
+        "cost_tier": "high",
+        "languages": ["he", "en"],
+        "skills": ["orchestration", "tool-use", "workspace-tasks", "project-coordination"],
+        "can_stream": false,
+        "can_use_tools": true,
+        "description": "Deamon-1 native WSL Hermes default profile"
+      }
     },
     {
       "id": "avneraibuddy",
@@ -50,7 +105,16 @@
       "bin": "/home/deamond_1/.local/bin/hermes",
       "cwd": "/home/deamond_1/AI-Agents-Workspace",
       "description": "AvnerAIBuddy alias to local Hermes",
-      "default_user": "avner"
+      "default_user": "avner",
+      "capabilities": {
+        "provider": "configured-by-default-profile",
+        "cost_tier": "high",
+        "languages": ["he", "en"],
+        "skills": ["orchestration", "tool-use", "workspace-tasks"],
+        "can_stream": false,
+        "can_use_tools": true,
+        "description": "AvnerAIBuddy alias to local Hermes"
+      }
     }
   ]
 }
