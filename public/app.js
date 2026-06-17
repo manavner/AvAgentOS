@@ -32,20 +32,22 @@ const state = {
   chats: new Map(),         // agentId → [{role, content, ts}]
   totalMsgs: 0,
   logFilter: 'all',
-  streaming: false,
-  streamBuffer: '',
-  responseTimer: null,
   logEntries: [],
+  openPanels: [],           // array of agentIds currently open as panels (max 4)
+  zoomedPanel: null,        // agentId of zoomed panel, or null
   display: {
     fontSize: Number(localStorage.getItem('avagentos.chatFontSize')) || 13,
     textDir: localStorage.getItem('avagentos.textDir') || 'auto',
   },
 };
 
+// Per-agent streaming state is stored directly on agent objects:
+// agent.streaming, agent.streamBuffer, agent.inputBuffer, agent.responseTimer
+
 // ── DOM ────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const el = {
-  chatMessages:  $('chat-messages'),
+  panelsWorkspace: $('panels-workspace'),
   agentList:     $('agent-list'),
   agentTabsBar:  $('agent-tabs-bar'),
   detailTabs:    $('detail-tabs'),
@@ -54,8 +56,6 @@ const el = {
   chatInput:     $('chat-input'),
   fontSizeLabel: $('font-size-label'),
   btnSend:       $('btn-send'),
-  typingIndicator: $('typing-indicator'),
-  tiName:        $('ti-name'),
   activeAgentLabel: $('active-agent-label'),
   valAgents:     $('val-agents'),
   valLlms:       $('val-llms'),
@@ -63,7 +63,6 @@ const el = {
   valMsgs:       $('val-msgs'),
   connBadge:     $('conn-badge'),
   connLabel:     $('conn-label'),
-  welcomeMsg:    $('welcome-msg'),
   scanStatus:    $('scan-status'),
   scanProgressFill: $('scan-progress-fill'),
   scanResults:   $('scan-results'),
@@ -85,12 +84,17 @@ socket.on('state:init', ({ agents, hasClaudeKey }) => {
   for (const agent of agents) {
     state.agents.set(agent.id, agent);
     if (!state.chats.has(agent.id)) state.chats.set(agent.id, []);
+    initAgentStreamState(agent);
   }
   renderAgentList();
   renderTabs();
   renderDetailTabs();
   updateMetrics();
-  setActiveAgent(pickDefaultAgentId());
+  const defaultId = pickDefaultAgentId();
+  if (defaultId) {
+    state.activeAgentId = defaultId;
+    openPanel(defaultId);
+  }
   if (!hasClaudeKey) {
     addLog('ANTHROPIC_API_KEY not set — copy .env.example to .env', 'warning');
   }
@@ -106,9 +110,18 @@ function pickDefaultAgentId() {
     || null;
 }
 
+function initAgentStreamState(agent) {
+  if (!agent) return;
+  if (agent.streaming === undefined) agent.streaming = false;
+  if (agent.streamBuffer === undefined) agent.streamBuffer = '';
+  if (agent.inputBuffer === undefined) agent.inputBuffer = '';
+  if (agent.responseTimer === undefined) agent.responseTimer = null;
+}
+
 socket.on('agent:added', agent => {
   state.agents.set(agent.id, agent);
   if (!state.chats.has(agent.id)) state.chats.set(agent.id, []);
+  initAgentStreamState(agent);
   renderAgentList();
   renderTabs();
   renderDetailTabs();
@@ -118,8 +131,11 @@ socket.on('agent:added', agent => {
 
 socket.on('agent:removed', ({ id }) => {
   const agent = state.agents.get(id);
+  closePanel(id);
   state.agents.delete(id);
-  if (state.activeAgentId === id) setActiveAgent('claude');
+  if (state.activeAgentId === id) {
+    state.activeAgentId = state.openPanels[0] || null;
+  }
   renderAgentList();
   renderTabs();
   renderDetailTabs();
@@ -135,96 +151,100 @@ socket.on('agent:status', ({ id, status, latency }) => {
   updateAgentCard(id);
   updateMetrics();
   updateDetailContent();
+  // Update panel status dot
+  const panelEl = getPanelEl(id);
+  if (panelEl) {
+    const dot = panelEl.querySelector('.panel-status-dot');
+    if (dot) dot.className = `panel-status-dot status-${status}`;
+  }
 });
 
 socket.on('chat:stream:start', ({ agentId }) => {
-  if (agentId !== state.activeAgentId) return;
-  state.streaming = true;
-  state.streamBuffer = '';
-  clearResponseTimer();
-  state.responseTimer = setTimeout(() => {
-    if (!state.streaming) return;
-    state.streaming = false;
-    el.typingIndicator.classList.add('hidden');
-    removeStreamBubble();
-    appendSystemMsg('Timeout: לא התקבלה תשובה מהסוכן בזמן. אפשר לשלוח שוב או לבדוק שהסוכן Online.');
-    setBtnSend(!!el.chatInput.value.trim());
-  }, 185000);
   const agent = state.agents.get(agentId);
-  el.tiName.textContent = agent?.name || agentId;
-  el.typingIndicator.classList.remove('hidden');
-  hideWelcome();
+  if (!agent) return;
+  agent.streaming = true;
+  agent.streamBuffer = '';
+  clearAgentResponseTimer(agent);
+  agent.responseTimer = setTimeout(() => {
+    if (!agent.streaming) return;
+    agent.streaming = false;
+    panelHideTyping(agentId);
+    removePanelStreamBubble(agentId);
+    panelAppendSystemMsg(agentId, 'Timeout: לא התקבלה תשובה מהסוכן בזמן. אפשר לשלוח שוב או לבדוק שהסוכן Online.');
+    updatePanelSendBtn(agentId);
+  }, 185000);
+  panelShowTyping(agentId);
 });
 
 socket.on('chat:stream:delta', ({ agentId, delta }) => {
-  if (agentId !== state.activeAgentId) return;
-  state.streamBuffer += delta;
-  updateStreamBubble(state.streamBuffer);
+  const agent = state.agents.get(agentId);
+  if (!agent) return;
+  agent.streamBuffer += delta;
+  updatePanelStreamBubble(agentId, agent.streamBuffer);
 });
 
 socket.on('chat:stream:end', ({ agentId, fullText }) => {
-  state.streaming = false;
-  clearResponseTimer();
-  el.typingIndicator.classList.add('hidden');
-  removeStreamBubble();
-
   const agent = state.agents.get(agentId);
-  if (agent) agent.messageCount = (agent.messageCount || 0) + 1;
+  if (agent) {
+    agent.streaming = false;
+    clearAgentResponseTimer(agent);
+    agent.messageCount = (agent.messageCount || 0) + 1;
+  }
   state.totalMsgs++;
   el.valMsgs.textContent = state.totalMsgs;
+
+  panelHideTyping(agentId);
+  removePanelStreamBubble(agentId);
 
   const chat = state.chats.get(agentId) || [];
   chat.push({ role: 'assistant', content: fullText, ts: Date.now() });
   state.chats.set(agentId, chat);
 
-  if (agentId === state.activeAgentId) {
-    appendMessage('agent', fullText, agent?.name || agentId);
+  if (state.openPanels.includes(agentId)) {
+    panelAppendMessage(agentId, 'agent', fullText, agent?.name || agentId);
   }
 
-  setBtnSend(!!el.chatInput.value.trim());
+  updatePanelSendBtn(agentId);
   updateDetailContent();
 });
 
 socket.on('chat:error', ({ agentId, error }) => {
-  state.streaming = false;
-  clearResponseTimer();
-  el.typingIndicator.classList.add('hidden');
-  removeStreamBubble();
-  setBtnSend(!!el.chatInput.value.trim());
-  if (agentId === state.activeAgentId) {
-    appendSystemMsg(`Error: ${error}`);
+  const agent = state.agents.get(agentId);
+  if (agent) {
+    agent.streaming = false;
+    clearAgentResponseTimer(agent);
   }
+  panelHideTyping(agentId);
+  removePanelStreamBubble(agentId);
+  updatePanelSendBtn(agentId);
+  panelAppendSystemMsg(agentId, `Error: ${error}`);
   addLog(`Error [${agentId}]: ${error}`, 'error');
 });
 
 socket.on('chat:cleared', ({ agentId }) => {
   state.chats.set(agentId, []);
-  if (agentId === state.activeAgentId) renderChat(agentId);
+  if (state.openPanels.includes(agentId)) renderPanelMessages(agentId);
 });
 
 socket.on('system:log', ({ message, level, ts }) => addLog(message, level, ts));
 
 // ── Incoming messages from agents (push via /api/inbox) ───────────
 socket.on('agent:inbox', ({ agent, message, ts }) => {
-  // Find agent by name or type
   const agentEntry = [...state.agents.values()].find(a =>
     a.name.toLowerCase() === agent.toLowerCase() ||
     a.type.toLowerCase() === agent.toLowerCase()
   );
   const agentId = agentEntry?.id || agent;
 
-  // Add to BOTH possible keys to be safe
   [agentId, agent].forEach(key => {
     if (!state.chats.has(key)) state.chats.set(key, []);
   });
   const entry = { role: 'assistant', content: message, ts: ts || new Date().toISOString() };
   state.chats.get(agentId).push(entry);
 
-  // Always re-render active chat (if this agent is active)
-  if (state.activeAgentId === agentId) {
-    renderChat(agentId);
+  if (state.openPanels.includes(agentId)) {
+    panelAppendMessage(agentId, 'agent', message, agentEntry?.name || agentId);
   } else {
-    // Still show a notification badge on the tab
     const tab = el.agentTabsBar?.querySelector(`[data-id="${agentId}"]`);
     if (tab && !tab.querySelector('.inbox-dot')) {
       const dot = document.createElement('span');
@@ -234,7 +254,6 @@ socket.on('agent:inbox', ({ agent, message, ts }) => {
     }
   }
 
-  // Flash agent card
   const card = document.querySelector(`[data-agent-id="${agentId}"]`);
   if (card) {
     card.classList.add('inbox-flash');
@@ -281,13 +300,318 @@ socket.on('discover:done', ({ found }) => {
   $('btn-start-scan').disabled = false;
 });
 
+// ── Panel Management ───────────────────────────────────────────────
+function getPanelEl(agentId) {
+  return el.panelsWorkspace.querySelector(`[data-panel-agent="${agentId}"]`);
+}
+
+function openPanel(agentId) {
+  if (state.openPanels.includes(agentId)) {
+    focusPanel(agentId);
+    setActiveAgent(agentId);
+    return;
+  }
+  if (state.openPanels.length >= 4) {
+    const oldest = state.openPanels[0];
+    closePanel(oldest);
+  }
+  state.openPanels.push(agentId);
+  createPanelEl(agentId);
+  updatePanelGrid();
+  renderPanelMessages(agentId);
+  setActiveAgent(agentId);
+}
+
+function closePanel(agentId) {
+  const idx = state.openPanels.indexOf(agentId);
+  if (idx === -1) return;
+  state.openPanels.splice(idx, 1);
+  const panelEl = getPanelEl(agentId);
+  if (panelEl) panelEl.remove();
+  _panelStreamBubbles.delete(agentId);
+  if (state.zoomedPanel === agentId) state.zoomedPanel = null;
+  updatePanelGrid();
+  if (state.activeAgentId === agentId) {
+    state.activeAgentId = state.openPanels[state.openPanels.length - 1] || null;
+    updateDetailContent();
+  }
+}
+
+function focusPanel(agentId) {
+  const panelEl = getPanelEl(agentId);
+  if (!panelEl) return;
+  panelEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  panelEl.classList.add('panel-focus-flash');
+  setTimeout(() => panelEl.classList.remove('panel-focus-flash'), 600);
+}
+
+function updatePanelGrid() {
+  const count = state.openPanels.length;
+  el.panelsWorkspace.dataset.panelCount = count;
+
+  if (state.zoomedPanel) {
+    for (const id of state.openPanels) {
+      const p = getPanelEl(id);
+      if (p) p.style.display = id === state.zoomedPanel ? '' : 'none';
+    }
+  } else {
+    for (const id of state.openPanels) {
+      const p = getPanelEl(id);
+      if (p) p.style.display = '';
+    }
+  }
+
+  let welcome = el.panelsWorkspace.querySelector('.workspace-welcome');
+  if (count === 0) {
+    if (!welcome) {
+      welcome = document.createElement('div');
+      welcome.className = 'workspace-welcome welcome-screen';
+      welcome.innerHTML = `
+        <div class="welcome-logo">AV<br>AGENT<br>OS</div>
+        <div class="welcome-text">Mission Control Online</div>
+        <div class="welcome-sub">Select an agent from the left panel to open a chat</div>
+      `;
+      el.panelsWorkspace.appendChild(welcome);
+    }
+  } else {
+    if (welcome) welcome.remove();
+  }
+
+  renderTabs();
+}
+
+function setZoom(agentId, zoomed) {
+  state.zoomedPanel = zoomed ? agentId : null;
+  updatePanelGrid();
+  for (const id of state.openPanels) {
+    const p = getPanelEl(id);
+    if (!p) continue;
+    const btn = p.querySelector('.panel-btn-zoom');
+    if (btn) btn.classList.toggle('active', id === state.zoomedPanel);
+  }
+}
+
+function createPanelEl(agentId) {
+  const agent = state.agents.get(agentId);
+  const name = agent ? getAgentDisplayName(agent) : agentId;
+  const icon = agent ? (AGENT_ICONS[agent.type] || '🔌') : '🔌';
+  const statusCls = agent ? `status-${agent.status}` : '';
+
+  const panel = document.createElement('div');
+  panel.className = 'chat-panel';
+  panel.dataset.panelAgent = agentId;
+  panel.innerHTML = `
+    <div class="panel-header">
+      <span class="panel-icon">${icon}</span>
+      <span class="panel-name">${escHtml(name)}</span>
+      <span class="panel-status-dot ${statusCls}"></span>
+      <div class="panel-header-actions">
+        <button class="panel-btn-zoom" title="Zoom">⛶</button>
+        <button class="panel-btn-close" title="Close">✕</button>
+      </div>
+    </div>
+    <div class="panel-messages"></div>
+    <div class="panel-typing hidden">
+      <span class="typing-dots">···</span> <span class="panel-typing-name">${escHtml(name)}</span>
+    </div>
+    <div class="panel-input-row">
+      <textarea class="panel-input" rows="1" placeholder="שלח הנחיה אל ${escHtml(name)}..."></textarea>
+      <button class="panel-send-btn" disabled>▶</button>
+    </div>
+  `;
+
+  const zoomBtn = panel.querySelector('.panel-btn-zoom');
+  const closeBtn = panel.querySelector('.panel-btn-close');
+  const input = panel.querySelector('.panel-input');
+  const sendBtn = panel.querySelector('.panel-send-btn');
+
+  zoomBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    setZoom(agentId, state.zoomedPanel !== agentId);
+  });
+  closeBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    closePanel(agentId);
+  });
+  panel.addEventListener('click', () => {
+    if (state.activeAgentId !== agentId) setActiveAgent(agentId);
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendPanelMessage(agentId);
+    }
+  });
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 88) + 'px';
+    const ag = state.agents.get(agentId);
+    sendBtn.disabled = !input.value.trim() || !!(ag && ag.streaming);
+    if (ag) ag.inputBuffer = input.value;
+  });
+  sendBtn.addEventListener('click', () => sendPanelMessage(agentId));
+
+  el.panelsWorkspace.appendChild(panel);
+  return panel;
+}
+
+function sendPanelMessage(agentId) {
+  const panel = getPanelEl(agentId);
+  if (!panel) return;
+  const input = panel.querySelector('.panel-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const agent = state.agents.get(agentId);
+  if (agent && agent.streaming) return;
+
+  panelAppendMessage(agentId, 'user', text, 'YOU');
+  const chat = state.chats.get(agentId) || [];
+  chat.push({ role: 'user', content: text, ts: Date.now() });
+  state.chats.set(agentId, chat);
+
+  input.value = '';
+  input.style.height = 'auto';
+  if (agent) agent.inputBuffer = '';
+  panel.querySelector('.panel-send-btn').disabled = true;
+
+  socket.emit('chat:message', { agentId, message: text });
+}
+
+function updatePanelSendBtn(agentId) {
+  const panel = getPanelEl(agentId);
+  if (!panel) return;
+  const input = panel.querySelector('.panel-input');
+  const sendBtn = panel.querySelector('.panel-send-btn');
+  const agent = state.agents.get(agentId);
+  if (sendBtn) sendBtn.disabled = !input?.value.trim() || !!(agent && agent.streaming);
+}
+
+// ── Panel message rendering ────────────────────────────────────────
+function renderPanelMessages(agentId) {
+  const panel = getPanelEl(agentId);
+  if (!panel) return;
+  const container = panel.querySelector('.panel-messages');
+  if (!container) return;
+  container.innerHTML = '';
+  const msgs = state.chats.get(agentId) || [];
+  if (!msgs.length) {
+    container.innerHTML = '<div class="panel-empty">No messages yet</div>';
+    return;
+  }
+  for (const msg of msgs) {
+    if (msg.role === 'user') {
+      _appendMsgToContainer(container, 'user', msg.content, 'YOU');
+    } else {
+      const agent = state.agents.get(agentId);
+      _appendMsgToContainer(container, 'agent', msg.content, agent?.name || agentId);
+    }
+  }
+}
+
+function panelAppendMessage(agentId, role, content, senderName) {
+  const panel = getPanelEl(agentId);
+  if (!panel) return;
+  const container = panel.querySelector('.panel-messages');
+  if (!container) return;
+  const empty = container.querySelector('.panel-empty');
+  if (empty) empty.remove();
+  _appendMsgToContainer(container, role, content, senderName);
+}
+
+function _appendMsgToContainer(container, role, content, senderName) {
+  const div = document.createElement('div');
+  div.className = `msg msg-${role}`;
+  const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const rendered = role === 'agent' ? renderMarkdown(content) : escHtml(content).replace(/\n/g, '<br>');
+  div.innerHTML = `
+    <div class="msg-header">
+      <span class="msg-sender">${escHtml(senderName)}</span>
+      <span class="msg-ts">${ts}</span>
+    </div>
+    <div class="msg-bubble">${rendered}</div>
+  `;
+  applyDirectionToNode(div.querySelector('.msg-bubble'));
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  div.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+}
+
+function panelAppendSystemMsg(agentId, text) {
+  const panel = getPanelEl(agentId);
+  if (!panel) return;
+  const container = panel.querySelector('.panel-messages');
+  if (!container) return;
+  const div = document.createElement('div');
+  div.className = 'msg msg-system';
+  div.innerHTML = `<div class="msg-bubble">${escHtml(text)}</div>`;
+  applyDirectionToNode(div.querySelector('.msg-bubble'));
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+// Per-panel streaming bubble tracking
+const _panelStreamBubbles = new Map(); // agentId → DOM element
+
+function updatePanelStreamBubble(agentId, text) {
+  const panel = getPanelEl(agentId);
+  if (!panel) return;
+  const container = panel.querySelector('.panel-messages');
+  if (!container) return;
+
+  let bubble = _panelStreamBubbles.get(agentId);
+  if (!bubble) {
+    const agent = state.agents.get(agentId);
+    const empty = container.querySelector('.panel-empty');
+    if (empty) empty.remove();
+    bubble = document.createElement('div');
+    bubble.className = 'msg msg-agent';
+    bubble.innerHTML = `
+      <div class="msg-header">
+        <span class="msg-sender">${escHtml(agent?.name || agentId)}</span>
+      </div>
+      <div class="msg-bubble streaming-cursor"></div>
+    `;
+    container.appendChild(bubble);
+    _panelStreamBubbles.set(agentId, bubble);
+  }
+  const bubbleEl = bubble.querySelector('.msg-bubble');
+  bubbleEl.innerHTML = renderMarkdown(text);
+  applyDirectionToNode(bubbleEl);
+  bubbleEl.classList.add('streaming-cursor');
+  container.scrollTop = container.scrollHeight;
+}
+
+function removePanelStreamBubble(agentId) {
+  const bubble = _panelStreamBubbles.get(agentId);
+  if (bubble) {
+    bubble.querySelector('.msg-bubble')?.classList.remove('streaming-cursor');
+    _panelStreamBubbles.delete(agentId);
+  }
+}
+
+function panelShowTyping(agentId) {
+  const panel = getPanelEl(agentId);
+  panel?.querySelector('.panel-typing')?.classList.remove('hidden');
+}
+
+function panelHideTyping(agentId) {
+  const panel = getPanelEl(agentId);
+  panel?.querySelector('.panel-typing')?.classList.add('hidden');
+}
+
+function clearAgentResponseTimer(agent) {
+  if (agent.responseTimer) {
+    clearTimeout(agent.responseTimer);
+    agent.responseTimer = null;
+  }
+}
+
 // ── Rendering ──────────────────────────────────────────────────────
 function renderAgentList() {
   el.agentList.innerHTML = '';
   const allAgents = [...state.agents.values()];
   const agents = uniqueAgentsForDisplay(allAgents.filter(a => !isLlmAgent(a)));
   const llms = uniqueAgentsForDisplay(allAgents.filter(isLlmAgent));
-
   appendAgentSection('AGENTS', agents);
   appendAgentSection('LLMS', llms);
 }
@@ -297,9 +621,7 @@ function appendAgentSection(title, agents) {
   const section = document.createElement('div');
   section.className = 'agent-list-section';
   section.innerHTML = `<div class="agent-section-title">${escHtml(title)}</div>`;
-  for (const agent of agents) {
-    section.appendChild(buildAgentCard(agent));
-  }
+  for (const agent of agents) section.appendChild(buildAgentCard(agent));
   el.agentList.appendChild(section);
 }
 
@@ -307,7 +629,7 @@ function buildAgentCard(agent) {
   const card = document.createElement('div');
   card.className = `agent-card status-${agent.status}`;
   card.dataset.id = agent.id;
-  if (agent.id === state.activeAgentId) card.classList.add('active');
+  if (state.openPanels.includes(agent.id)) card.classList.add('active');
   const color = AGENT_COLORS[agent.type] || AGENT_COLORS.generic;
   card.style.setProperty('--agent-color', color);
 
@@ -340,10 +662,10 @@ function buildAgentCard(agent) {
     </div>
   `;
 
-  card.querySelector('.btn-chat')?.addEventListener('click', () => setActiveAgent(agent.id));
+  card.querySelector('.btn-chat')?.addEventListener('click', e => { e.stopPropagation(); openPanel(agent.id); });
   card.querySelector('.btn-ping')?.addEventListener('click', e => { e.stopPropagation(); pingAgent(agent.id); });
   card.querySelector('.btn-remove')?.addEventListener('click', e => { e.stopPropagation(); removeAgent(agent.id); });
-  card.addEventListener('click', () => setActiveAgent(agent.id));
+  card.addEventListener('click', () => openPanel(agent.id));
   return card;
 }
 
@@ -351,18 +673,18 @@ function updateAgentCard(id) {
   const existing = el.agentList.querySelector(`[data-id="${id}"]`);
   const agent = state.agents.get(id);
   if (!existing || !agent) return;
-  const newCard = buildAgentCard(agent);
-  el.agentList.replaceChild(newCard, existing);
+  el.agentList.replaceChild(buildAgentCard(agent), existing);
 }
 
 function renderTabs() {
   el.agentTabsBar.innerHTML = '';
   for (const agent of uniqueAgentsForDisplay([...state.agents.values()])) {
     const tab = document.createElement('div');
-    tab.className = `chat-tab${agent.id === state.activeAgentId ? ' active' : ''}`;
+    const isOpen = state.openPanels.includes(agent.id);
+    tab.className = `chat-tab${isOpen ? ' active' : ''}`;
     tab.dataset.id = agent.id;
     tab.innerHTML = `<span class="tab-dot"></span>${escHtml(getAgentDisplayName(agent))}`;
-    tab.addEventListener('click', () => setActiveAgent(agent.id));
+    tab.addEventListener('click', () => openPanel(agent.id));
     el.agentTabsBar.appendChild(tab);
   }
 }
@@ -379,44 +701,24 @@ function renderDetailTabs() {
   }
 }
 
-function renderChat(agentId) {
-  el.chatMessages.innerHTML = '';
-  const msgs = state.chats.get(agentId) || [];
-  if (!msgs.length) {
-    showWelcome();
-    return;
-  }
-  for (const msg of msgs) {
-    if (msg.role === 'user') {
-      appendMessage('user', msg.content, 'YOU');
-    } else {
-      const agent = state.agents.get(agentId);
-      appendMessage('agent', msg.content, agent?.name || agentId);
-    }
-  }
-}
-
 function setActiveAgent(id) {
   if (!id) return;
   state.activeAgentId = id;
   const agent = state.agents.get(id);
   if (!agent) return;
 
-  // Update header
   const statusLabel = agent.status === 'online' ? 'READY' : agent.status.toUpperCase();
   const displayName = getAgentDisplayName(agent);
   el.activeAgentLabel.textContent = `${displayName.toUpperCase()} — ${statusLabel}`;
-  el.chatInput.placeholder = `שלח הנחיה אל ${displayName} — התשובה תופיע כאן במרכז`;
+  el.chatInput.placeholder = `שלח הנחיה אל ${displayName}...`;
 
-  // Update tabs
-  el.agentTabsBar.querySelectorAll('.chat-tab').forEach(t => t.classList.toggle('active', t.dataset.id === id));
   el.detailTabs.querySelectorAll('.detail-tab').forEach(t => t.classList.toggle('active', t.dataset.id === id));
+  el.agentList.querySelectorAll('.agent-card').forEach(c => c.classList.toggle('active', state.openPanels.includes(c.dataset.id)));
 
-  // Update agent cards
-  el.agentList.querySelectorAll('.agent-card').forEach(c => c.classList.toggle('active', c.dataset.id === id));
+  el.panelsWorkspace.querySelectorAll('.chat-panel').forEach(p => {
+    p.classList.toggle('panel-active', p.dataset.panelAgent === id);
+  });
 
-  // Render chat
-  renderChat(id);
   updateDetailContent();
 }
 
@@ -426,7 +728,6 @@ function updateDetailContent() {
 
   const uptime = formatDuration(Date.now() - agent.connectedAt);
   const latency = agent.latency ? `${agent.latency}ms` : '—';
-  const statusClass = agent.status;
 
   el.detailContent.innerHTML = `
     <div class="detail-block">
@@ -435,7 +736,7 @@ function updateDetailContent() {
     </div>
     <div class="detail-block">
       <div class="detail-label">STATUS</div>
-      <div class="detail-value ${statusClass}">${agent.status.toUpperCase()}</div>
+      <div class="detail-value ${agent.status}">${agent.status.toUpperCase()}</div>
     </div>
     <div class="detail-block">
       <div class="detail-label">TYPE</div>
@@ -456,117 +757,6 @@ function updateDetailContent() {
       <div class="detail-value">${uptime}</div>
     </div>
   `;
-}
-
-// ── Chat ───────────────────────────────────────────────────────────
-function appendMessage(role, content, senderName) {
-  hideWelcome();
-  const div = document.createElement('div');
-  div.className = `msg msg-${role}`;
-  const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const rendered = role === 'agent' ? renderMarkdown(content) : escHtml(content).replace(/\n/g, '<br>');
-  div.innerHTML = `
-    <div class="msg-header">
-      <span class="msg-sender">${escHtml(senderName)}</span>
-      <span class="msg-ts">${ts}</span>
-    </div>
-    <div class="msg-bubble">${rendered}</div>
-  `;
-  applyDirectionToNode(div.querySelector('.msg-bubble'));
-  el.chatMessages.appendChild(div);
-  el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
-
-  // Syntax highlight code blocks
-  div.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
-}
-
-function appendSystemMsg(text) {
-  const div = document.createElement('div');
-  div.className = 'msg msg-system';
-  div.innerHTML = `<div class="msg-bubble">${escHtml(text)}</div>`;
-  applyDirectionToNode(div.querySelector('.msg-bubble'));
-  el.chatMessages.appendChild(div);
-  el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
-}
-
-let streamBubble = null;
-function updateStreamBubble(text) {
-  if (!streamBubble) {
-    hideWelcome();
-    streamBubble = document.createElement('div');
-    streamBubble.className = 'msg msg-agent';
-    const agent = state.agents.get(state.activeAgentId);
-    streamBubble.innerHTML = `
-      <div class="msg-header">
-        <span class="msg-sender">${escHtml(agent?.name || state.activeAgentId)}</span>
-      </div>
-      <div class="msg-bubble streaming-cursor"></div>
-    `;
-    el.chatMessages.appendChild(streamBubble);
-  }
-  const bubble = streamBubble.querySelector('.msg-bubble');
-  bubble.innerHTML = renderMarkdown(text);
-  applyDirectionToNode(bubble);
-  bubble.classList.add('streaming-cursor');
-  el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
-}
-
-function removeStreamBubble() {
-  if (streamBubble) {
-    streamBubble.querySelector('.msg-bubble')?.classList.remove('streaming-cursor');
-    streamBubble = null;
-  }
-}
-
-function clearResponseTimer() {
-  if (state.responseTimer) {
-    clearTimeout(state.responseTimer);
-    state.responseTimer = null;
-  }
-}
-
-function sendMessage() {
-  const text = el.chatInput.value.trim();
-  if (!text || state.streaming) return;
-
-  const agent = state.agents.get(state.activeAgentId);
-  if (!agent) return;
-
-  // Optimistic user message
-  appendMessage('user', text, 'YOU');
-  const chat = state.chats.get(state.activeAgentId) || [];
-  chat.push({ role: 'user', content: text, ts: Date.now() });
-  state.chats.set(state.activeAgentId, chat);
-
-  el.chatInput.value = '';
-  el.chatInput.style.height = 'auto';
-  setBtnSend(false);
-
-  socket.emit('chat:message', { agentId: state.activeAgentId, message: text });
-}
-
-function setBtnSend(enabled) {
-  el.btnSend.disabled = !enabled;
-}
-
-function hideWelcome() {
-  const w = $('welcome-msg');
-  if (w) w.remove();
-}
-
-function showWelcome() {
-  if (!el.chatMessages.querySelector('.welcome-screen')) {
-    const agent = state.agents.get(state.activeAgentId);
-    const target = agent?.name || 'סוכן';
-    el.chatMessages.innerHTML = `
-      <div id="welcome-msg" class="welcome-screen">
-        <div class="welcome-logo">AV<br>AGENT<br>OS</div>
-        <div class="welcome-text">Mission Control Online</div>
-        <div class="welcome-sub">נבחר: ${escHtml(target)}</div>
-        <div class="welcome-sub">כתוב למטה ולחץ TRANSMIT — התגובה תופיע כאן</div>
-      </div>
-    `;
-  }
 }
 
 // ── Agent Actions ──────────────────────────────────────────────────
@@ -594,9 +784,7 @@ function addLog(message, level = 'info', tsStr) {
   const entry = { message, level, ts: tsStr || new Date().toISOString() };
   state.logEntries.push(entry);
   if (state.logEntries.length > 500) state.logEntries.shift();
-  if (state.logFilter === 'all' || state.logFilter === level) {
-    renderLogEntry(entry);
-  }
+  if (state.logFilter === 'all' || state.logFilter === level) renderLogEntry(entry);
 }
 
 function renderLogEntry(entry) {
@@ -676,7 +864,6 @@ $('form-add-agent').addEventListener('submit', async e => {
   }
 });
 
-// Discover modal
 $('btn-scan').addEventListener('click', () => {
   $('modal-discover').classList.remove('hidden');
   el.scanResults.innerHTML = '';
@@ -724,9 +911,7 @@ function openOnboardModal() {
   $('inp-onboard-name').value = '';
   $('onboard-prompt-text').textContent = ONBOARD_PROMPT;
 }
-function closeOnboardModal() {
-  $('modal-onboard').classList.add('hidden');
-}
+function closeOnboardModal() { $('modal-onboard').classList.add('hidden'); }
 
 $('btn-onboard').addEventListener('click', openOnboardModal);
 $('btn-onboard-close').addEventListener('click', closeOnboardModal);
@@ -750,7 +935,7 @@ $('btn-onboard-submit').addEventListener('click', async () => {
   $('btn-onboard-submit').disabled = true;
 
   try {
-    const res  = await fetch('/api/onboard', {
+    const res = await fetch('/api/onboard', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ report, name }),
@@ -806,8 +991,7 @@ function setChatFontSize(size) {
 function applyDirectionToNode(node) {
   if (!node) return;
   const dir = state.display.textDir;
-  if (dir === 'rtl' || dir === 'ltr') node.setAttribute('dir', dir);
-  else node.setAttribute('dir', 'auto');
+  node.setAttribute('dir', (dir === 'rtl' || dir === 'ltr') ? dir : 'auto');
 }
 
 function setTextDirection(dir) {
@@ -836,26 +1020,71 @@ function initDisplayControls() {
 
 initDisplayControls();
 
-// ── Input handling ─────────────────────────────────────────────────
+// ── Global input bar (forwards to active panel or broadcasts) ──────
 el.chatInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    sendMessage();
+    _globalSendOrBroadcast();
   }
 });
 el.chatInput.addEventListener('input', () => {
   el.chatInput.style.height = 'auto';
   el.chatInput.style.height = Math.min(el.chatInput.scrollHeight, 88) + 'px';
-  setBtnSend(!!el.chatInput.value.trim() && !state.streaming);
+  setBtnSend(!!el.chatInput.value.trim());
 });
-el.btnSend.addEventListener('click', sendMessage);
-$('btn-clear-chat').addEventListener('click', () => socket.emit('chat:clear', { agentId: state.activeAgentId }));
+el.btnSend.addEventListener('click', _globalSendOrBroadcast);
+
+function _globalSendOrBroadcast() {
+  const text = el.chatInput.value.trim();
+  if (!text) return;
+  if (state.activeAgentId && state.openPanels.includes(state.activeAgentId)) {
+    const panel = getPanelEl(state.activeAgentId);
+    if (panel) {
+      const panelInput = panel.querySelector('.panel-input');
+      if (panelInput) {
+        panelInput.value = text;
+        el.chatInput.value = '';
+        el.chatInput.style.height = 'auto';
+        setBtnSend(false);
+        sendPanelMessage(state.activeAgentId);
+        return;
+      }
+    }
+  }
+}
+
+function setBtnSend(enabled) {
+  el.btnSend.disabled = !enabled;
+}
+
+$('btn-clear-chat').addEventListener('click', () => {
+  if (state.activeAgentId) socket.emit('chat:clear', { agentId: state.activeAgentId });
+});
+
 $('btn-broadcast').addEventListener('click', () => {
-  const text = el.chatInput.value.trim() || prompt('Broadcast message to all online agents:');
-  if (text) {
-    el.chatInput.value = '';
+  const text = el.chatInput.value.trim() || prompt('Broadcast message to all open panels:');
+  if (!text) return;
+  el.chatInput.value = '';
+  el.chatInput.style.height = 'auto';
+  setBtnSend(false);
+  if (state.openPanels.length > 0) {
+    for (const agentId of state.openPanels) {
+      const agent = state.agents.get(agentId);
+      if (!agent || agent.streaming) continue;
+      panelAppendMessage(agentId, 'user', text, 'YOU');
+      const chat = state.chats.get(agentId) || [];
+      chat.push({ role: 'user', content: text, ts: Date.now() });
+      state.chats.set(agentId, chat);
+      socket.emit('chat:message', { agentId, message: text });
+    }
+  } else {
     socket.emit('broadcast', { message: text });
   }
+});
+
+// ESC to close zoom
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && state.zoomedPanel) setZoom(state.zoomedPanel, false);
 });
 
 // Log filters
@@ -884,39 +1113,24 @@ setInterval(updateClock, 1000);
 (function initCanvas() {
   const canvas = $('bg-canvas');
   const ctx = canvas.getContext('2d');
-
-  function resize() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-  }
+  function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
   resize();
   window.addEventListener('resize', resize);
 
   const stars = Array.from({ length: 100 }, () => ({
-    x: Math.random(),
-    y: Math.random(),
+    x: Math.random(), y: Math.random(),
     r: Math.random() * 1.2 + 0.3,
     a: Math.random() * 0.5 + 0.1,
     speed: Math.random() * 0.00015 + 0.00005,
   }));
 
-  const gridSize = 60;
-
   function draw() {
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-
-    // Grid
     ctx.strokeStyle = 'rgba(0, 212, 255, 0.025)';
     ctx.lineWidth = 1;
-    for (let x = 0; x < W; x += gridSize) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    }
-    for (let y = 0; y < H; y += gridSize) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-    }
-
-    // Stars
+    for (let x = 0; x < W; x += 60) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+    for (let y = 0; y < H; y += 60) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
     const now = performance.now() * 0.001;
     for (const s of stars) {
       const opacity = s.a * (0.6 + 0.4 * Math.sin(now * s.speed * 1000 + s.x * 10));
@@ -925,7 +1139,6 @@ setInterval(updateClock, 1000);
       ctx.fillStyle = `rgba(180, 220, 255, ${opacity})`;
       ctx.fill();
     }
-
     requestAnimationFrame(draw);
   }
   draw();
@@ -940,15 +1153,8 @@ function isLlmAgent(agent) {
 function getAgentDisplayName(agent) {
   if (!agent) return '';
   return String(
-    agent.nickname ||
-    agent.alias ||
-    agent.display_name ||
-    agent.displayName ||
-    agent.config?.nickname ||
-    agent.config?.alias ||
-    agent.name ||
-    agent.id ||
-    'Agent'
+    agent.nickname || agent.alias || agent.display_name || agent.displayName ||
+    agent.config?.nickname || agent.config?.alias || agent.name || agent.id || 'Agent'
   ).trim();
 }
 
@@ -1032,7 +1238,7 @@ socket.on('memory:note-content', ({ relPath, content }) => {
   openNoteEditor(relPath, content || '');
 });
 
-socket.on('memory:save-result', ({ ok, agentId }) => {
+socket.on('memory:save-result', ({ ok }) => {
   const btn = $('btn-save-memory');
   if (!btn) return;
   btn.classList.remove('saving');
@@ -1040,7 +1246,7 @@ socket.on('memory:save-result', ({ ok, agentId }) => {
     btn.classList.add('saved');
     btn.textContent = '✓';
     setTimeout(() => { btn.classList.remove('saved'); btn.textContent = '💾'; }, 2000);
-    addLog(`Conversation saved to Obsidian`, 'success');
+    addLog('Conversation saved to Obsidian', 'success');
   } else {
     addLog('Memory not configured — set OBSIDIAN_VAULT_PATH in .env', 'warning');
   }
@@ -1073,36 +1279,31 @@ function renderMemoryNotes(notes) {
   }
 }
 
-// Memory panel toggle
 $('btn-toggle-memory').addEventListener('click', () => {
   memState.collapsed = !memState.collapsed;
   $('memory-section').classList.toggle('memory-collapsed', memState.collapsed);
 });
 
-// Sync button
 $('btn-memory-sync').addEventListener('click', e => {
   e.stopPropagation();
   socket.emit('memory:sync');
   addLog('Syncing Obsidian vault...', 'info');
 });
 
-// Save conversation button
 $('btn-save-memory').addEventListener('click', () => {
   const btn = $('btn-save-memory');
   btn.classList.add('saving');
   socket.emit('memory:save-chat', { agentId: state.activeAgentId });
 });
 
-// New note button
 $('btn-open-note-editor').addEventListener('click', () => openNoteEditor('', ''));
 
-// Note editor modal
 function openNoteEditor(relPath, content) {
   $('inp-note-path').value = relPath || '';
   $('note-editor-content').value = content || '';
   $('note-editor-title').textContent = relPath ? `EDIT: ${relPath}` : 'NEW NOTE';
   $('modal-note').classList.remove('hidden');
-  ($('note-editor-content')).focus();
+  $('note-editor-content').focus();
 }
 function closeNoteEditor() { $('modal-note').classList.add('hidden'); }
 
@@ -1196,7 +1397,6 @@ async function askAgent(projectId) {
     const data = await res.json();
     if (data.ok) {
       showResponsePanel(data.project?.display_name || projectId, data.response);
-      // Update local state
       const idx = projState.projects.findIndex(p => p.id === projectId);
       if (idx >= 0) projState.projects[idx] = data.project;
       renderProjects();
@@ -1242,7 +1442,6 @@ function openProjectModal(project = null) {
   document.getElementById('inp-proj-phase').value = project?.phase || '';
   document.getElementById('inp-proj-desc').value = project?.description || '';
 
-  // Populate agent dropdown. Keep real agents and LLMs separate, both selectable.
   const sel = document.getElementById('inp-proj-agent');
   sel.innerHTML = '<option value="">— ללא —</option>';
   const allSelectableAgents = [...state.agents.values()];
@@ -1278,7 +1477,6 @@ document.getElementById('form-project')?.addEventListener('submit', async e => {
     description: document.getElementById('inp-proj-desc').value.trim(),
   };
   if (!body.display_name) body.display_name = body.name;
-
   const res = await fetch(id ? `/api/projects/${id}` : '/api/projects', {
     method: id ? 'PUT' : 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1306,23 +1504,19 @@ function openImportModal() {
   const sel = document.getElementById('inp-import-agent');
   sel.innerHTML = '';
   for (const agent of state.agents.values()) {
-    if (agent.type === 'hermes' && (agent.status === 'online')) {
+    if (agent.type === 'hermes' && agent.status === 'online') {
       const opt = document.createElement('option');
       opt.value = agent.id;
       opt.textContent = agent.name;
       sel.appendChild(opt);
     }
   }
-  if (!sel.options.length) {
-    sel.innerHTML = '<option value="">אין סוכני Hermes מחוברים</option>';
-  }
+  if (!sel.options.length) sel.innerHTML = '<option value="">אין סוכני Hermes מחוברים</option>';
   document.getElementById('import-status').textContent = '';
   modal?.classList.remove('hidden');
 }
 
-function closeImportModal() {
-  document.getElementById('modal-import')?.classList.add('hidden');
-}
+function closeImportModal() { document.getElementById('modal-import')?.classList.add('hidden'); }
 
 document.getElementById('btn-import-projects')?.addEventListener('click', openImportModal);
 document.getElementById('btn-import-close')?.addEventListener('click', closeImportModal);
@@ -1339,8 +1533,7 @@ document.getElementById('btn-import-run')?.addEventListener('click', async () =>
   statusEl.textContent = 'שולח שאילתה לסוכן...';
 
   try {
-    // Create a temp project just to use the query endpoint — or call agent directly
-    const res = await fetch(`/api/projects/import-query`, {
+    const res = await fetch('/api/projects/import-query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agentId, query }),
@@ -1348,7 +1541,6 @@ document.getElementById('btn-import-run')?.addEventListener('click', async () =>
     const data = await res.json();
     if (!data.ok) throw new Error(data.error);
 
-    // Try to parse JSON from response
     const text = data.response;
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (!jsonMatch) throw new Error('לא נמצא JSON בתגובה. תגובת הסוכן:\n' + text.substring(0, 300));
@@ -1374,4 +1566,4 @@ document.getElementById('btn-import-run')?.addEventListener('click', async () =>
 // ── Init ───────────────────────────────────────────────────────────
 addLog('AvAgentOS frontend loaded', 'info');
 setBtnSend(false);
-el.chatInput.addEventListener('input', () => setBtnSend(!!el.chatInput.value.trim() && !state.streaming));
+updatePanelGrid(); // Show welcome state
