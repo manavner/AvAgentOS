@@ -1,6 +1,22 @@
 {
   "agents": [
     {
+      "id": "hermes-live",
+      "type": "hermes-live",
+      "host": "http://127.0.0.1:9120",
+      "description": "Hermes Dashboard — live WebSocket connection, streaming",
+      "default_user": "avner",
+      "capabilities": {
+        "provider": "configured-by-active-hermes-profile",
+        "cost_tier": "high",
+        "languages": ["he", "en"],
+        "skills": ["orchestration", "planning", "tool-use", "workspace-tasks", "streaming"],
+        "can_stream": true,
+        "can_use_tools": true,
+        "description": "Live Hermes session via WebSocket — fast streaming, active profile"
+      }
+    },
+    {
       "id": "hermes",
       "container": "hermes",
       "profile": null,
@@ -26,8 +42,8 @@
       "type": "local",
       "container": null,
       "profile": "cheap_buddy",
-      "bin": "/home/deamond_1/.local/bin/hermes",
-      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "bin": "C:\\Users\\AVNER\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+      "cwd": null,
       "description": "Legacy alias for Hermes cheap_buddy profile",
       "default_user": "avner",
       "capabilities": {
@@ -45,8 +61,8 @@
       "type": "local",
       "container": null,
       "profile": "cheap_buddy",
-      "bin": "/home/deamond_1/.local/bin/hermes",
-      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "bin": "C:\\Users\\AVNER\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+      "cwd": null,
       "description": "Hermes cheap_buddy profile",
       "default_user": "avner",
       "capabilities": {
@@ -64,8 +80,8 @@
       "type": "local",
       "container": null,
       "profile": "reviewer",
-      "bin": "/home/deamond_1/.local/bin/hermes",
-      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "bin": "C:\\Users\\AVNER\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+      "cwd": null,
       "description": "Hermes reviewer profile for code, plan, and risk review",
       "default_user": "avner",
       "capabilities": {
@@ -83,8 +99,8 @@
       "type": "local",
       "container": null,
       "profile": null,
-      "bin": "/home/deamond_1/.local/bin/hermes",
-      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "bin": "C:\\Users\\AVNER\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+      "cwd": null,
       "description": "Deamon-1 native WSL Hermes agent",
       "default_user": "avner",
       "capabilities": {
@@ -102,8 +118,8 @@
       "type": "local",
       "container": null,
       "profile": null,
-      "bin": "/home/deamond_1/.local/bin/hermes",
-      "cwd": "/home/deamond_1/AI-Agents-Workspace",
+      "bin": "C:\\Users\\AVNER\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+      "cwd": null,
       "description": "AvnerAIBuddy alias to local Hermes",
       "default_user": "avner",
       "capabilities": {

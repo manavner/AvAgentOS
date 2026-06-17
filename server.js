@@ -97,6 +97,22 @@ function bridgeHostedAgent({ id, name, bridgeId, description, role, riskLevel, c
 
 const DEFAULT_LOCAL_AGENTS = [
   bridgeHostedAgent({
+    id: 'hermes-live',
+    name: 'Hermes Live',
+    bridgeId: 'hermes-live',
+    description: 'Hermes Dashboard — live WebSocket, streaming, active profile',
+    role: 'main local Hermes agent with streaming responses via WebSocket',
+    riskLevel: 'write_project',
+    capabilities: {
+      provider: 'configured-by-active-hermes-profile',
+      cost_tier: 'high',
+      languages: ['he', 'en'],
+      skills: ['orchestration', 'planning', 'tool-use', 'workspace-tasks'],
+      can_stream: true,
+      can_use_tools: true,
+    },
+  }),
+  bridgeHostedAgent({
     id: 'cheap_buddy',
     name: 'Cheap Worker',
     bridgeId: 'cheap_buddy',
@@ -225,6 +241,50 @@ agents.set('gemini', {
   latency: null,
 });
 histories.set('gemini', []);
+
+agents.set('ollama', {
+  id: 'ollama',
+  name: 'Ollama',
+  type: 'ollama',
+  host: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
+  port: 11434,
+  model: process.env.OLLAMA_MODEL || null,
+  status: 'connecting',
+  description: 'Ollama — local LLM server',
+  icon: 'ollama',
+  builtIn: true,
+  connectedAt: Date.now(),
+  messageCount: 0,
+  latency: null,
+  config: {
+    format: 'openai',
+    chatEndpoint: '/v1/chat/completions',
+    healthEndpoint: '/api/tags',
+  },
+});
+histories.set('ollama', []);
+
+agents.set('lmstudio', {
+  id: 'lmstudio',
+  name: 'LM Studio',
+  type: 'lmstudio',
+  host: process.env.LMSTUDIO_HOST || 'http://127.0.0.1:1234',
+  port: 1234,
+  model: process.env.LMSTUDIO_MODEL || null,
+  status: 'connecting',
+  description: 'LM Studio — local LLM server',
+  icon: 'lmstudio',
+  builtIn: true,
+  connectedAt: Date.now(),
+  messageCount: 0,
+  latency: null,
+  config: {
+    format: 'openai',
+    chatEndpoint: '/v1/chat/completions',
+    healthEndpoint: '/v1/models',
+  },
+});
+histories.set('lmstudio', []);
 
 seedDefaultLocalAgents();
 
@@ -575,6 +635,12 @@ io.on('connection', (socket) => {
       await handleClaude(socket, message);
     } else if (agent.type === 'gemini') {
       await handleGemini(socket, message);
+    } else if (agent.type === 'ollama') {
+      if (!agent.model) return socket.emit('chat:error', { agentId, error: 'Ollama: no model loaded. Load a model in Ollama first.' });
+      await handleAgent(socket, agentId, message);
+    } else if (agent.type === 'lmstudio') {
+      if (!agent.model) return socket.emit('chat:error', { agentId, error: 'LM Studio: no model loaded. Load a model in LM Studio and start the local server.' });
+      await handleAgent(socket, agentId, message);
     } else {
       await handleAgent(socket, agentId, message);
     }
@@ -788,13 +854,14 @@ async function handleAgent(socket, agentId, userMessage) {
 
     // Hermes dashboard uses provider name as model, or pass-through to openrouter/openai-codex
     const defaultModel = agent.type === 'hermes' ? 'openai-codex' : 'default';
+    const resolvedModel = agent.config?.model || agent.model || defaultModel;
 
     // Build identity envelope — hardcoded now, will come from session/auth in future
     const envelope = buildEnvelope({ project_id: null });
 
     let body;
     if (fmt === 'openai') {
-      body = { model: agent.config?.model || defaultModel, messages: history, stream: false, user: JSON.stringify(envelope) };
+      body = { model: resolvedModel, messages: history, stream: false, user: JSON.stringify(envelope) };
     } else if (fmt === 'anthropic') {
       body = { messages: history, max_tokens: 2048 };
     } else if (fmt === 'simple') {
@@ -839,15 +906,16 @@ async function handleAgent(socket, agentId, userMessage) {
 // ── LAN Discovery ────────────────────────────────────────────────
 async function pingAgent(agentId) {
   const agent = agents.get(agentId);
-  if (!agent || agent.builtIn) return agent ? 1 : false;
+  if (!agent) return false;
+  if (agent.builtIn && agent.type !== 'ollama' && agent.type !== 'lmstudio') return 1;
   try {
     const start = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
-    // hermes-dashboard exposes /api/status instead of /health
     const defaultHealth = agent.type === 'hermes' ? '/api/status' : '/health';
     const healthPath = agent.config?.healthEndpoint || defaultHealth;
-    const res = await fetch(`http://${agent.host}:${agent.port}${healthPath}`, {
+    const baseUrl = agent.host?.startsWith('http') ? agent.host.replace(/\/$/, '') : `http://${agent.host}:${agent.port}`;
+    const res = await fetch(`${baseUrl}${healthPath}`, {
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -860,6 +928,14 @@ async function pingAgent(agentId) {
     if (data.config?.capabilities) agent.capabilities = { ...(agent.capabilities || {}), ...data.config.capabilities };
     if (data.agent && !agent.config?.bridgeAgentId) {
       agent.config = { ...(agent.config || {}), bridgeAgentId: data.agent };
+    }
+    if (agent.type === 'ollama' && Array.isArray(data.models) && data.models.length > 0) {
+      if (!agent.model) agent.model = data.models[0].name;
+      agent.description = `Ollama — ${data.models.map(m => m.name).join(', ')}`;
+    }
+    if (agent.type === 'lmstudio' && Array.isArray(data.data) && data.data.length > 0) {
+      if (!agent.model) agent.model = data.data[0].id;
+      agent.description = `LM Studio — ${data.data.map(m => m.id).join(', ')}`;
     }
     io.emit('agent:status', { id: agentId, status: agent.status, latency });
     return latency;
@@ -924,9 +1000,11 @@ async function probeHost(host, port) {
 }
 
 // ── Health ping loop ─────────────────────────────────────────────
+pingAgent('ollama');    // initial check on startup
+pingAgent('lmstudio'); // initial check on startup
 setInterval(() => {
   for (const [id, agent] of agents) {
-    if (!agent.builtIn) pingAgent(id);
+    if (!agent.builtIn || agent.type === 'ollama' || agent.type === 'lmstudio') pingAgent(id);
   }
 }, 30000);
 

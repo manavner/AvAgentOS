@@ -13,12 +13,18 @@ Features:
   • Routes chat by URL  /agent/{id}/...  OR  by model field
 """
 
-import os, uuid, time, re, json, subprocess, threading, queue
+import os, sys, uuid, time, re, json, subprocess, threading, queue, asyncio
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+import urllib.request
+
+# websockets installed locally in ./ws_deps
+_WS_DEPS = Path(__file__).parent / "ws_deps"
+if str(_WS_DEPS) not in sys.path:
+    sys.path.insert(0, str(_WS_DEPS))
 
 # ── Config ────────────────────────────────────────────────────────
 PORT        = int(os.getenv("PORT",    "8765"))
@@ -170,17 +176,44 @@ def call_hermes(agent_id: str, message: str, user: str = None) -> str:
         message = envelope_block + message
 
     # "local" = hermes runs natively (WSL / Linux), no docker exec
+    _using_python_module = bin_path.endswith("python.exe") or bin_path.endswith("python")
+
     if agent_type == "local" or not container:
-        cmd = [bin_path]
-        _cwd = agent.get("cwd", None)  # optional working dir for local agents
+        if _using_python_module:
+            cmd = [bin_path, "-m", "hermes_cli.main"]
+        else:
+            cmd = [bin_path]
+        _cwd = agent.get("cwd", None)
     else:
-        workdir = agent.get("workdir", "/root")  # default to /root where hermes memory lives
+        workdir = agent.get("workdir", "/root")
         cmd = ["docker", "exec", "-i", "-w", workdir, container, bin_path]
         _cwd = None
 
-    if profile:
+    if profile and not _using_python_module:
         cmd += ["--profile", profile]
-    cmd += ["-z", message, "chat"]
+
+    # UTF-8 env for subprocess
+    import tempfile
+    sub_env = os.environ.copy()
+    sub_env["PYTHONUTF8"] = "1"
+    sub_env["PYTHONIOENCODING"] = "utf-8"
+
+    _wrapper_py = None
+    if _using_python_module:
+        # Write a temp wrapper script with the message embedded as a Python literal.
+        # This avoids Windows command-line Unicode encoding issues entirely.
+        _wrapper_py = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                                   suffix=".py", delete=False)
+        _wrapper_py.write(
+            f"import sys\n"
+            f"sys.argv = [sys.argv[0], '-z', {repr(message)}]\n"
+            f"from hermes_cli.main import main\n"
+            f"main()\n"
+        )
+        _wrapper_py.close()
+        cmd = [bin_path, _wrapper_py.name]
+    else:
+        cmd += ["-z", message]
 
     lines = []
     proc  = None
@@ -195,6 +228,7 @@ def call_hermes(agent_id: str, message: str, user: str = None) -> str:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=sub_env,
         )
         proc.stdin.close()
 
@@ -240,8 +274,134 @@ def call_hermes(agent_id: str, message: str, user: str = None) -> str:
                 proc.kill()
             except Exception:
                 pass
+        if _wrapper_py:
+            try:
+                os.unlink(_wrapper_py.name)
+            except Exception:
+                pass
 
     return "\n".join(lines) if lines else "(no response)"
+
+# ── Hermes-Live: WebSocket JSON-RPC to Dashboard ─────────────────
+def _hermes_live_token(host: str) -> str:
+    """Fetch the session token injected into the Dashboard HTML."""
+    try:
+        with urllib.request.urlopen(f"{host}/", timeout=4) as r:
+            html = r.read().decode("utf-8", errors="replace")
+        m = re.search(r'__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"', html)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+def call_hermes_live(agent: dict, message: str, user: str = None) -> str:
+    """Send a message to the running Hermes Dashboard via WebSocket JSON-RPC."""
+    import websockets.sync.client as _wsc
+
+    host = agent.get("host", "http://127.0.0.1:9120").rstrip("/")
+    ws_host = host.replace("http://", "ws://").replace("https://", "wss://")
+    token = _hermes_live_token(host)
+
+    ws_url = f"{ws_host}/api/ws"
+    if token:
+        ws_url += f"?token={token}"
+
+    timeout = agent.get("timeout", TIMEOUT)
+    collected: list[str] = []
+
+    try:
+        with _wsc.connect(ws_url, open_timeout=6) as ws:
+            rid = uuid.uuid4().hex[:8]
+
+            # ── create a fresh session ────────────────────────────
+            ws.send(json.dumps({
+                "jsonrpc": "2.0", "id": rid + "_c",
+                "method": "session.create",
+                "params": {"profile": agent.get("profile") or None},
+            }))
+
+            session_id = None
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                raw = ws.recv(timeout=5)
+                msg = json.loads(raw)
+                # session.create response
+                if msg.get("id") == rid + "_c":
+                    session_id = (msg.get("result") or {}).get("session_id")
+                    break
+
+            if not session_id:
+                return "[hermes-live: could not create session]"
+
+            # ── inject envelope / user context ────────────────────
+            text = message
+            if user:
+                try:
+                    env = json.loads(user)
+                    fu = env.get("from_user", {})
+                    text = (
+                        f"[AVAGENTOS ENVELOPE]\n"
+                        f"user_id: {fu.get('user_id','?')}\n"
+                        f"display_name: {fu.get('display_name','?')}\n"
+                        f"auth_level: {fu.get('auth_level','?')}\n"
+                        f"[/AVAGENTOS ENVELOPE]\n\n"
+                    ) + text
+                except (json.JSONDecodeError, TypeError):
+                    text = f"[User: {user}]\n\n" + text
+
+            # ── submit prompt ─────────────────────────────────────
+            ws.send(json.dumps({
+                "jsonrpc": "2.0", "id": rid + "_p",
+                "method": "prompt.submit",
+                "params": {"session_id": session_id, "text": text},
+            }))
+
+            # ── collect streaming events until message.complete ────
+            # Hermes Dashboard uses: method="event", params.type="message.delta"
+            # with params.payload.text for content, and params.type="message.complete"
+            # to signal end of turn.
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                remaining = max(1.0, deadline - time.time())
+                try:
+                    raw = ws.recv(timeout=min(remaining, SILENCE * 2))
+                except TimeoutError:
+                    if collected:
+                        break
+                    continue
+                msg = json.loads(raw)
+                method = msg.get("method", "")
+                params = msg.get("params", {})
+                event_type = params.get("type", "")
+                payload = params.get("payload", {})
+
+                if method == "event":
+                    if event_type == "message.delta":
+                        tok = payload.get("text", "") if isinstance(payload, dict) else ""
+                        if tok:
+                            collected.append(tok)
+                    elif event_type == "message.complete":
+                        # payload may contain the full assembled text
+                        full = payload.get("text", "") if isinstance(payload, dict) else ""
+                        if full and not collected:
+                            collected.append(full)
+                        break
+                    elif event_type == "error":
+                        err = payload.get("message", str(payload))
+                        return f"[hermes-live error: {err}]"
+                # legacy / fallback event names
+                elif method == "stream.token":
+                    tok = params.get("token", "")
+                    if tok:
+                        collected.append(tok)
+                elif method in ("stream.end", "agent.done"):
+                    break
+
+    except Exception as exc:
+        return f"[hermes-live error: {exc}]"
+
+    return "".join(collected).strip() or "(no response)"
+
 
 # ── Response builder ──────────────────────────────────────────────
 def _resp(text: str, model: str = "hermes") -> dict:
@@ -347,6 +507,15 @@ def models():
                 for k in _agents]
     return {"object": "list", "data": data}
 
+def _dispatch(agent_id: str, req: ChatRequest) -> str:
+    """Route to the right backend based on agent type."""
+    with _lock:
+        agent = dict(_agents.get(agent_id, {}))
+    if agent.get("type") == "hermes-live":
+        return call_hermes_live(agent, _user_msg(req), user=req.user)
+    return call_hermes(agent_id, _user_msg(req), user=req.user)
+
+
 # ── Chat — routed by URL path ─────────────────────────────────────
 @app.post("/agent/{agent_id}/v1/chat/completions")
 @app.post("/agent/{agent_id}/api/v1/chat/completions")
@@ -356,7 +525,7 @@ def chat_by_path(agent_id: str, req: ChatRequest):
     msg = _user_msg(req)
     print(f"  → [{agent_id}] user={req.user!r} {msg[:60]!r}")
     t0  = time.time()
-    txt = call_hermes(agent_id, msg, user=req.user)
+    txt = _dispatch(agent_id, req)
     print(f"  ✓ [{agent_id}] {time.time()-t0:.1f}s  {txt[:60]!r}")
     return _resp(txt, agent_id)
 
@@ -373,13 +542,15 @@ def chat_by_model(req: ChatRequest):
     msg = _user_msg(req)
     print(f"  → [{agent_id}] user={req.user!r} {msg[:60]!r}")
     t0  = time.time()
-    txt = call_hermes(agent_id, msg, user=req.user)
+    txt = _dispatch(agent_id, req)
     print(f"  ✓ [{agent_id}] {time.time()-t0:.1f}s  {txt[:60]!r}")
     return _resp(txt, agent_id)
 
 # ── Main ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8")
     print(f"""
   ╔════════════════════════════════════════╗
   ║   Hermes Multi-Agent Bridge  v3.0      ║

@@ -7,6 +7,7 @@ const AGENT_ICONS = {
   hermes:   '⚡',
   openclaw: '🦅',
   ollama:   '🦙',
+  lmstudio: '🖥️',
   openai:   '🧠',
   openrouter:'🧭',
   generic:  '🔌',
@@ -17,11 +18,12 @@ const AGENT_COLORS = {
   hermes:   '#f59e0b',
   openclaw: '#10b981',
   ollama:   '#a855f7',
+  lmstudio: '#06b6d4',
   openai:   '#22d3ee',
   openrouter:'#8b5cf6',
   generic:  '#64748b',
 };
-const LLM_TYPES = new Set(['claude', 'gemini', 'openai', 'openrouter', 'ollama']);
+const LLM_TYPES = new Set(['claude', 'gemini', 'openai', 'openrouter', 'ollama', 'lmstudio']);
 
 // ── State ──────────────────────────────────────────────────────────
 const state = {
