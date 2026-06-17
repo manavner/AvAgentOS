@@ -142,23 +142,14 @@
           <button class="mc-btn" id="btn-dir-rtl" title="יישור לימין / עברית">ימין</button>
           <button class="mc-btn" id="btn-dir-ltr" title="יישור לשמאל / English">LEFT</button>
           <button class="mc-btn active" id="btn-dir-auto" title="זיהוי כיוון אוטומטי">AUTO</button>
-          <button class="mc-btn" id="btn-broadcast" title="Broadcast to all online agents">⊕ BROADCAST</button>
-          <button class="mc-btn" id="btn-clear-chat" title="Clear chat">⌫</button>
+          <button class="mc-btn" id="btn-broadcast" title="Broadcast to all open tiles">⊕ BROADCAST</button>
+          <button class="mc-btn" id="btn-clear-chat" title="Clear active tile chat">⌫</button>
         </div>
       </div>
 
       <div id="agent-tabs-bar"></div>
 
-      <div id="panels-workspace"></div>
-
-      <div id="chat-input-area">
-        <button id="btn-save-memory" class="mem-save-btn" title="Save conversation to Obsidian">💾</button>
-        <textarea id="chat-input" placeholder="Enter command or message..." rows="1"></textarea>
-        <button id="btn-send" disabled>
-          <span>TRANSMIT</span>
-          <span class="send-icon">⟶</span>
-        </button>
-      </div>
+      <div id="tiles-workspace"></div>
     </section>
 
     <!-- RIGHT: SYSTEM LOG -->
@@ -166,6 +157,7 @@
       <div class="panel-header">
         <span class="ph-icon">≡</span>
         <span>SYSTEM LOG</span>
+        <button class="ph-btn" id="btn-toggle-log" title="Collapse log">◀</button>
         <button class="ph-btn" id="btn-clear-log">⌫</button>
       </div>
       <div id="log-filter">

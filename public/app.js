@@ -1,4 +1,4 @@
-/* ── AvAgentOS Frontend ─────────────────────────────────────────── */
+/* ── AvAgentOS Frontend — Tile Grid Edition ──────────────────────── */
 'use strict';
 
 const AGENT_ICONS = {
@@ -7,7 +7,6 @@ const AGENT_ICONS = {
   hermes:   '⚡',
   openclaw: '🦅',
   ollama:   '🦙',
-  lmstudio: '🖥️',
   openai:   '🧠',
   openrouter:'🧭',
   generic:  '🔌',
@@ -18,7 +17,6 @@ const AGENT_COLORS = {
   hermes:   '#f59e0b',
   openclaw: '#10b981',
   ollama:   '#a855f7',
-  lmstudio: '#06b6d4',
   openai:   '#22d3ee',
   openrouter:'#8b5cf6',
   generic:  '#64748b',
@@ -33,29 +31,27 @@ const state = {
   totalMsgs: 0,
   logFilter: 'all',
   logEntries: [],
-  openPanels: [],           // array of agentIds currently open as panels (max 4)
-  zoomedPanel: null,        // agentId of zoomed panel, or null
+  openTiles: [],            // array of agentIds currently open as tiles
+  zoomedTile: null,         // agentId of zoomed tile, or null
   display: {
     fontSize: Number(localStorage.getItem('avagentos.chatFontSize')) || 13,
     textDir: localStorage.getItem('avagentos.textDir') || 'auto',
   },
 };
 
-// Per-agent streaming state is stored directly on agent objects:
+// Per-agent streaming state stored on agent objects:
 // agent.streaming, agent.streamBuffer, agent.inputBuffer, agent.responseTimer
 
 // ── DOM ────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const el = {
-  panelsWorkspace: $('panels-workspace'),
+  tilesWorkspace: $('tiles-workspace'),
   agentList:     $('agent-list'),
   agentTabsBar:  $('agent-tabs-bar'),
   detailTabs:    $('detail-tabs'),
   detailContent: $('detail-content'),
   logEntries:    $('log-entries'),
-  chatInput:     $('chat-input'),
   fontSizeLabel: $('font-size-label'),
-  btnSend:       $('btn-send'),
   activeAgentLabel: $('active-agent-label'),
   valAgents:     $('val-agents'),
   valLlms:       $('val-llms'),
@@ -90,11 +86,24 @@ socket.on('state:init', ({ agents, hasClaudeKey }) => {
   renderTabs();
   renderDetailTabs();
   updateMetrics();
-  const defaultId = pickDefaultAgentId();
-  if (defaultId) {
-    state.activeAgentId = defaultId;
-    openPanel(defaultId);
+
+  // Auto-open tiles for all online agents (up to 6)
+  const onlineAgents = [...state.agents.values()].filter(a =>
+    a.status === 'online' || a.status === 'no-key'
+  );
+  const toOpen = uniqueAgentsForDisplay(onlineAgents).slice(0, 6);
+  for (const agent of toOpen) openTile(agent.id);
+
+  // If nothing opened, open default
+  if (state.openTiles.length === 0) {
+    const defaultId = pickDefaultAgentId();
+    if (defaultId) openTile(defaultId);
   }
+
+  if (state.openTiles.length > 0) {
+    setActiveAgent(state.openTiles[0]);
+  }
+
   if (!hasClaudeKey) {
     addLog('ANTHROPIC_API_KEY not set — copy .env.example to .env', 'warning');
   }
@@ -131,10 +140,10 @@ socket.on('agent:added', agent => {
 
 socket.on('agent:removed', ({ id }) => {
   const agent = state.agents.get(id);
-  closePanel(id);
+  closeTile(id);
   state.agents.delete(id);
   if (state.activeAgentId === id) {
-    state.activeAgentId = state.openPanels[0] || null;
+    state.activeAgentId = state.openTiles[0] || null;
   }
   renderAgentList();
   renderTabs();
@@ -151,11 +160,11 @@ socket.on('agent:status', ({ id, status, latency }) => {
   updateAgentCard(id);
   updateMetrics();
   updateDetailContent();
-  // Update panel status dot
-  const panelEl = getPanelEl(id);
-  if (panelEl) {
-    const dot = panelEl.querySelector('.panel-status-dot');
-    if (dot) dot.className = `panel-status-dot status-${status}`;
+  // Update tile status dot
+  const tileEl = getTileEl(id);
+  if (tileEl) {
+    const dot = tileEl.querySelector('.tile-status-dot');
+    if (dot) dot.className = `tile-status-dot status-${status}`;
   }
 });
 
@@ -168,19 +177,19 @@ socket.on('chat:stream:start', ({ agentId }) => {
   agent.responseTimer = setTimeout(() => {
     if (!agent.streaming) return;
     agent.streaming = false;
-    panelHideTyping(agentId);
-    removePanelStreamBubble(agentId);
-    panelAppendSystemMsg(agentId, 'Timeout: לא התקבלה תשובה מהסוכן בזמן. אפשר לשלוח שוב או לבדוק שהסוכן Online.');
-    updatePanelSendBtn(agentId);
+    tileHideTyping(agentId);
+    removeTileStreamBubble(agentId);
+    tileAppendSystemMsg(agentId, 'Timeout: לא התקבלה תשובה מהסוכן בזמן. אפשר לשלוח שוב.');
+    updateTileSendBtn(agentId);
   }, 185000);
-  panelShowTyping(agentId);
+  tileShowTyping(agentId);
 });
 
 socket.on('chat:stream:delta', ({ agentId, delta }) => {
   const agent = state.agents.get(agentId);
   if (!agent) return;
   agent.streamBuffer += delta;
-  updatePanelStreamBubble(agentId, agent.streamBuffer);
+  updateTileStreamBubble(agentId, agent.streamBuffer);
 });
 
 socket.on('chat:stream:end', ({ agentId, fullText }) => {
@@ -193,18 +202,18 @@ socket.on('chat:stream:end', ({ agentId, fullText }) => {
   state.totalMsgs++;
   el.valMsgs.textContent = state.totalMsgs;
 
-  panelHideTyping(agentId);
-  removePanelStreamBubble(agentId);
+  tileHideTyping(agentId);
+  removeTileStreamBubble(agentId);
 
   const chat = state.chats.get(agentId) || [];
   chat.push({ role: 'assistant', content: fullText, ts: Date.now() });
   state.chats.set(agentId, chat);
 
-  if (state.openPanels.includes(agentId)) {
-    panelAppendMessage(agentId, 'agent', fullText, agent?.name || agentId);
+  if (state.openTiles.includes(agentId)) {
+    tileAppendMessage(agentId, 'agent', fullText, agent?.name || agentId);
   }
 
-  updatePanelSendBtn(agentId);
+  updateTileSendBtn(agentId);
   updateDetailContent();
 });
 
@@ -214,16 +223,16 @@ socket.on('chat:error', ({ agentId, error }) => {
     agent.streaming = false;
     clearAgentResponseTimer(agent);
   }
-  panelHideTyping(agentId);
-  removePanelStreamBubble(agentId);
-  updatePanelSendBtn(agentId);
-  panelAppendSystemMsg(agentId, `Error: ${error}`);
+  tileHideTyping(agentId);
+  removeTileStreamBubble(agentId);
+  updateTileSendBtn(agentId);
+  tileAppendSystemMsg(agentId, `Error: ${error}`);
   addLog(`Error [${agentId}]: ${error}`, 'error');
 });
 
 socket.on('chat:cleared', ({ agentId }) => {
   state.chats.set(agentId, []);
-  if (state.openPanels.includes(agentId)) renderPanelMessages(agentId);
+  if (state.openTiles.includes(agentId)) renderTileMessages(agentId);
 });
 
 socket.on('system:log', ({ message, level, ts }) => addLog(message, level, ts));
@@ -242,8 +251,8 @@ socket.on('agent:inbox', ({ agent, message, ts }) => {
   const entry = { role: 'assistant', content: message, ts: ts || new Date().toISOString() };
   state.chats.get(agentId).push(entry);
 
-  if (state.openPanels.includes(agentId)) {
-    panelAppendMessage(agentId, 'agent', message, agentEntry?.name || agentId);
+  if (state.openTiles.includes(agentId)) {
+    tileAppendMessage(agentId, 'agent', message, agentEntry?.name || agentId);
   } else {
     const tab = el.agentTabsBar?.querySelector(`[data-id="${agentId}"]`);
     if (tab && !tab.querySelector('.inbox-dot')) {
@@ -300,146 +309,154 @@ socket.on('discover:done', ({ found }) => {
   $('btn-start-scan').disabled = false;
 });
 
-// ── Panel Management ───────────────────────────────────────────────
-function getPanelEl(agentId) {
-  return el.panelsWorkspace.querySelector(`[data-panel-agent="${agentId}"]`);
+// ── Tile Management ────────────────────────────────────────────────
+function getTileEl(agentId) {
+  return el.tilesWorkspace.querySelector(`[data-tile-agent="${agentId}"]`);
 }
 
-function openPanel(agentId) {
-  if (state.openPanels.includes(agentId)) {
-    focusPanel(agentId);
+function openTile(agentId) {
+  if (state.openTiles.includes(agentId)) {
+    focusTile(agentId);
     setActiveAgent(agentId);
     return;
   }
-  if (state.openPanels.length >= 4) {
-    const oldest = state.openPanels[0];
-    closePanel(oldest);
-  }
-  state.openPanels.push(agentId);
-  createPanelEl(agentId);
-  updatePanelGrid();
-  renderPanelMessages(agentId);
+  state.openTiles.push(agentId);
+  createTileEl(agentId);
+  renderTileMessages(agentId);
+  updateWorkspaceWelcome();
+  renderTabs();
   setActiveAgent(agentId);
 }
 
-function closePanel(agentId) {
-  const idx = state.openPanels.indexOf(agentId);
+function closeTile(agentId) {
+  const idx = state.openTiles.indexOf(agentId);
   if (idx === -1) return;
-  state.openPanels.splice(idx, 1);
-  const panelEl = getPanelEl(agentId);
-  if (panelEl) panelEl.remove();
-  _panelStreamBubbles.delete(agentId);
-  if (state.zoomedPanel === agentId) state.zoomedPanel = null;
-  updatePanelGrid();
+  state.openTiles.splice(idx, 1);
+  const tileEl = getTileEl(agentId);
+  if (tileEl) tileEl.remove();
+  _tileStreamBubbles.delete(agentId);
+  if (state.zoomedTile === agentId) {
+    state.zoomedTile = null;
+    document.body.classList.remove('tile-zoomed');
+  }
+  updateWorkspaceWelcome();
+  renderTabs();
   if (state.activeAgentId === agentId) {
-    state.activeAgentId = state.openPanels[state.openPanels.length - 1] || null;
+    state.activeAgentId = state.openTiles[state.openTiles.length - 1] || null;
     updateDetailContent();
   }
 }
 
-function focusPanel(agentId) {
-  const panelEl = getPanelEl(agentId);
-  if (!panelEl) return;
-  panelEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  panelEl.classList.add('panel-focus-flash');
-  setTimeout(() => panelEl.classList.remove('panel-focus-flash'), 600);
+function focusTile(agentId) {
+  const tileEl = getTileEl(agentId);
+  if (!tileEl) return;
+  tileEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  tileEl.classList.add('tile-focus-flash');
+  setTimeout(() => tileEl.classList.remove('tile-focus-flash'), 600);
 }
 
-function updatePanelGrid() {
-  const count = state.openPanels.length;
-  el.panelsWorkspace.dataset.panelCount = count;
-
-  if (state.zoomedPanel) {
-    for (const id of state.openPanels) {
-      const p = getPanelEl(id);
-      if (p) p.style.display = id === state.zoomedPanel ? '' : 'none';
+function setZoom(agentId, zoomed) {
+  if (zoomed) {
+    state.zoomedTile = agentId;
+    document.body.classList.add('tile-zoomed');
+    // Hide other tiles
+    for (const id of state.openTiles) {
+      const t = getTileEl(id);
+      if (t) t.classList.toggle('tile-hidden', id !== agentId);
     }
+    const tileEl = getTileEl(agentId);
+    if (tileEl) tileEl.classList.add('tile-zoom-overlay');
   } else {
-    for (const id of state.openPanels) {
-      const p = getPanelEl(id);
-      if (p) p.style.display = '';
+    state.zoomedTile = null;
+    document.body.classList.remove('tile-zoomed');
+    for (const id of state.openTiles) {
+      const t = getTileEl(id);
+      if (t) {
+        t.classList.remove('tile-hidden');
+        t.classList.remove('tile-zoom-overlay');
+      }
     }
   }
+  // Update zoom button state
+  for (const id of state.openTiles) {
+    const t = getTileEl(id);
+    if (t) t.querySelector('.tile-btn-zoom')?.classList.toggle('active', id === state.zoomedTile);
+  }
+}
 
-  let welcome = el.panelsWorkspace.querySelector('.workspace-welcome');
-  if (count === 0) {
+function updateWorkspaceWelcome() {
+  let welcome = el.tilesWorkspace.querySelector('.workspace-welcome');
+  if (state.openTiles.length === 0) {
     if (!welcome) {
       welcome = document.createElement('div');
       welcome.className = 'workspace-welcome welcome-screen';
       welcome.innerHTML = `
         <div class="welcome-logo">AV<br>AGENT<br>OS</div>
         <div class="welcome-text">Mission Control Online</div>
-        <div class="welcome-sub">Select an agent from the left panel to open a chat</div>
+        <div class="welcome-sub">Select an agent from the left panel to open a chat tile</div>
       `;
-      el.panelsWorkspace.appendChild(welcome);
+      el.tilesWorkspace.appendChild(welcome);
     }
   } else {
     if (welcome) welcome.remove();
   }
-
-  renderTabs();
 }
 
-function setZoom(agentId, zoomed) {
-  state.zoomedPanel = zoomed ? agentId : null;
-  updatePanelGrid();
-  for (const id of state.openPanels) {
-    const p = getPanelEl(id);
-    if (!p) continue;
-    const btn = p.querySelector('.panel-btn-zoom');
-    if (btn) btn.classList.toggle('active', id === state.zoomedPanel);
-  }
-}
-
-function createPanelEl(agentId) {
+function createTileEl(agentId) {
   const agent = state.agents.get(agentId);
   const name = agent ? getAgentDisplayName(agent) : agentId;
   const icon = agent ? (AGENT_ICONS[agent.type] || '🔌') : '🔌';
   const statusCls = agent ? `status-${agent.status}` : '';
 
-  const panel = document.createElement('div');
-  panel.className = 'chat-panel';
-  panel.dataset.panelAgent = agentId;
-  panel.innerHTML = `
-    <div class="panel-header">
-      <span class="panel-icon">${icon}</span>
-      <span class="panel-name">${escHtml(name)}</span>
-      <span class="panel-status-dot ${statusCls}"></span>
-      <div class="panel-header-actions">
-        <button class="panel-btn-zoom" title="Zoom">⛶</button>
-        <button class="panel-btn-close" title="Close">✕</button>
+  const tile = document.createElement('div');
+  tile.className = 'agent-tile';
+  tile.dataset.tileAgent = agentId;
+  tile.innerHTML = `
+    <div class="tile-header">
+      <span class="tile-icon">${icon}</span>
+      <span class="tile-name">${escHtml(name)}</span>
+      <span class="tile-status-dot ${statusCls}"></span>
+      <div class="tile-actions">
+        <button class="tile-btn-save" title="Save to memory">💾</button>
+        <button class="tile-btn-zoom" title="Zoom">⛶</button>
+        <button class="tile-btn-close" title="Close">✕</button>
       </div>
     </div>
-    <div class="panel-messages"></div>
-    <div class="panel-typing hidden">
-      <span class="typing-dots">···</span> <span class="panel-typing-name">${escHtml(name)}</span>
+    <div class="tile-messages"></div>
+    <div class="tile-typing hidden">
+      <span class="typing-dots">···</span>
     </div>
-    <div class="panel-input-row">
-      <textarea class="panel-input" rows="1" placeholder="שלח הנחיה אל ${escHtml(name)}..."></textarea>
-      <button class="panel-send-btn" disabled>▶</button>
+    <div class="tile-input-row">
+      <textarea class="tile-input" rows="1" placeholder="שלח אל ${escHtml(name)}..."></textarea>
+      <button class="tile-send-btn" disabled>▶</button>
     </div>
   `;
 
-  const zoomBtn = panel.querySelector('.panel-btn-zoom');
-  const closeBtn = panel.querySelector('.panel-btn-close');
-  const input = panel.querySelector('.panel-input');
-  const sendBtn = panel.querySelector('.panel-send-btn');
+  const saveBtn  = tile.querySelector('.tile-btn-save');
+  const zoomBtn  = tile.querySelector('.tile-btn-zoom');
+  const closeBtn = tile.querySelector('.tile-btn-close');
+  const input    = tile.querySelector('.tile-input');
+  const sendBtn  = tile.querySelector('.tile-send-btn');
 
+  saveBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    saveTileMemory(agentId, saveBtn);
+  });
   zoomBtn.addEventListener('click', e => {
     e.stopPropagation();
-    setZoom(agentId, state.zoomedPanel !== agentId);
+    setZoom(agentId, state.zoomedTile !== agentId);
   });
   closeBtn.addEventListener('click', e => {
     e.stopPropagation();
-    closePanel(agentId);
+    closeTile(agentId);
   });
-  panel.addEventListener('click', () => {
+  tile.addEventListener('click', () => {
     if (state.activeAgentId !== agentId) setActiveAgent(agentId);
   });
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendPanelMessage(agentId);
+      sendTileMessage(agentId);
     }
   });
   input.addEventListener('input', () => {
@@ -449,22 +466,51 @@ function createPanelEl(agentId) {
     sendBtn.disabled = !input.value.trim() || !!(ag && ag.streaming);
     if (ag) ag.inputBuffer = input.value;
   });
-  sendBtn.addEventListener('click', () => sendPanelMessage(agentId));
+  sendBtn.addEventListener('click', () => sendTileMessage(agentId));
 
-  el.panelsWorkspace.appendChild(panel);
-  return panel;
+  el.tilesWorkspace.appendChild(tile);
+  return tile;
 }
 
-function sendPanelMessage(agentId) {
-  const panel = getPanelEl(agentId);
-  if (!panel) return;
-  const input = panel.querySelector('.panel-input');
+function saveTileMemory(agentId, btn) {
+  // Save last assistant message in this tile to Obsidian
+  const chat = state.chats.get(agentId) || [];
+  const lastAssistant = [...chat].reverse().find(m => m.role === 'assistant');
+  if (!lastAssistant) {
+    addLog('No assistant message to save', 'warning');
+    return;
+  }
+  btn.classList.add('saving');
+  socket.emit('memory:save-chat', { agentId });
+  // Visual feedback via memory:save-result event
+}
+
+socket.on('memory:save-result', ({ ok, agentId }) => {
+  // Handle tile save buttons
+  const tile = getTileEl(agentId);
+  const tileBtn = tile?.querySelector('.tile-btn-save');
+  if (tileBtn) {
+    tileBtn.classList.remove('saving');
+    if (ok) {
+      tileBtn.textContent = '✓';
+      setTimeout(() => { tileBtn.textContent = '💾'; }, 2000);
+      addLog('Conversation saved to Obsidian', 'success');
+    } else {
+      addLog('Memory not configured — set OBSIDIAN_VAULT_PATH in .env', 'warning');
+    }
+  }
+});
+
+function sendTileMessage(agentId) {
+  const tile = getTileEl(agentId);
+  if (!tile) return;
+  const input = tile.querySelector('.tile-input');
   const text = input.value.trim();
   if (!text) return;
   const agent = state.agents.get(agentId);
   if (agent && agent.streaming) return;
 
-  panelAppendMessage(agentId, 'user', text, 'YOU');
+  tileAppendMessage(agentId, 'user', text, 'YOU');
   const chat = state.chats.get(agentId) || [];
   chat.push({ role: 'user', content: text, ts: Date.now() });
   state.chats.set(agentId, chat);
@@ -472,30 +518,30 @@ function sendPanelMessage(agentId) {
   input.value = '';
   input.style.height = 'auto';
   if (agent) agent.inputBuffer = '';
-  panel.querySelector('.panel-send-btn').disabled = true;
+  tile.querySelector('.tile-send-btn').disabled = true;
 
   socket.emit('chat:message', { agentId, message: text });
 }
 
-function updatePanelSendBtn(agentId) {
-  const panel = getPanelEl(agentId);
-  if (!panel) return;
-  const input = panel.querySelector('.panel-input');
-  const sendBtn = panel.querySelector('.panel-send-btn');
+function updateTileSendBtn(agentId) {
+  const tile = getTileEl(agentId);
+  if (!tile) return;
+  const input = tile.querySelector('.tile-input');
+  const sendBtn = tile.querySelector('.tile-send-btn');
   const agent = state.agents.get(agentId);
   if (sendBtn) sendBtn.disabled = !input?.value.trim() || !!(agent && agent.streaming);
 }
 
-// ── Panel message rendering ────────────────────────────────────────
-function renderPanelMessages(agentId) {
-  const panel = getPanelEl(agentId);
-  if (!panel) return;
-  const container = panel.querySelector('.panel-messages');
+// ── Tile message rendering ─────────────────────────────────────────
+function renderTileMessages(agentId) {
+  const tile = getTileEl(agentId);
+  if (!tile) return;
+  const container = tile.querySelector('.tile-messages');
   if (!container) return;
   container.innerHTML = '';
   const msgs = state.chats.get(agentId) || [];
   if (!msgs.length) {
-    container.innerHTML = '<div class="panel-empty">No messages yet</div>';
+    container.innerHTML = '<div class="tile-empty">No messages yet</div>';
     return;
   }
   for (const msg of msgs) {
@@ -508,12 +554,12 @@ function renderPanelMessages(agentId) {
   }
 }
 
-function panelAppendMessage(agentId, role, content, senderName) {
-  const panel = getPanelEl(agentId);
-  if (!panel) return;
-  const container = panel.querySelector('.panel-messages');
+function tileAppendMessage(agentId, role, content, senderName) {
+  const tile = getTileEl(agentId);
+  if (!tile) return;
+  const container = tile.querySelector('.tile-messages');
   if (!container) return;
-  const empty = container.querySelector('.panel-empty');
+  const empty = container.querySelector('.tile-empty');
   if (empty) empty.remove();
   _appendMsgToContainer(container, role, content, senderName);
 }
@@ -536,10 +582,10 @@ function _appendMsgToContainer(container, role, content, senderName) {
   div.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
 }
 
-function panelAppendSystemMsg(agentId, text) {
-  const panel = getPanelEl(agentId);
-  if (!panel) return;
-  const container = panel.querySelector('.panel-messages');
+function tileAppendSystemMsg(agentId, text) {
+  const tile = getTileEl(agentId);
+  if (!tile) return;
+  const container = tile.querySelector('.tile-messages');
   if (!container) return;
   const div = document.createElement('div');
   div.className = 'msg msg-system';
@@ -549,19 +595,19 @@ function panelAppendSystemMsg(agentId, text) {
   container.scrollTop = container.scrollHeight;
 }
 
-// Per-panel streaming bubble tracking
-const _panelStreamBubbles = new Map(); // agentId → DOM element
+// Per-tile streaming bubble tracking
+const _tileStreamBubbles = new Map(); // agentId → DOM element
 
-function updatePanelStreamBubble(agentId, text) {
-  const panel = getPanelEl(agentId);
-  if (!panel) return;
-  const container = panel.querySelector('.panel-messages');
+function updateTileStreamBubble(agentId, text) {
+  const tile = getTileEl(agentId);
+  if (!tile) return;
+  const container = tile.querySelector('.tile-messages');
   if (!container) return;
 
-  let bubble = _panelStreamBubbles.get(agentId);
+  let bubble = _tileStreamBubbles.get(agentId);
   if (!bubble) {
     const agent = state.agents.get(agentId);
-    const empty = container.querySelector('.panel-empty');
+    const empty = container.querySelector('.tile-empty');
     if (empty) empty.remove();
     bubble = document.createElement('div');
     bubble.className = 'msg msg-agent';
@@ -572,7 +618,7 @@ function updatePanelStreamBubble(agentId, text) {
       <div class="msg-bubble streaming-cursor"></div>
     `;
     container.appendChild(bubble);
-    _panelStreamBubbles.set(agentId, bubble);
+    _tileStreamBubbles.set(agentId, bubble);
   }
   const bubbleEl = bubble.querySelector('.msg-bubble');
   bubbleEl.innerHTML = renderMarkdown(text);
@@ -581,22 +627,20 @@ function updatePanelStreamBubble(agentId, text) {
   container.scrollTop = container.scrollHeight;
 }
 
-function removePanelStreamBubble(agentId) {
-  const bubble = _panelStreamBubbles.get(agentId);
+function removeTileStreamBubble(agentId) {
+  const bubble = _tileStreamBubbles.get(agentId);
   if (bubble) {
     bubble.querySelector('.msg-bubble')?.classList.remove('streaming-cursor');
-    _panelStreamBubbles.delete(agentId);
+    _tileStreamBubbles.delete(agentId);
   }
 }
 
-function panelShowTyping(agentId) {
-  const panel = getPanelEl(agentId);
-  panel?.querySelector('.panel-typing')?.classList.remove('hidden');
+function tileShowTyping(agentId) {
+  getTileEl(agentId)?.querySelector('.tile-typing')?.classList.remove('hidden');
 }
 
-function panelHideTyping(agentId) {
-  const panel = getPanelEl(agentId);
-  panel?.querySelector('.panel-typing')?.classList.add('hidden');
+function tileHideTyping(agentId) {
+  getTileEl(agentId)?.querySelector('.tile-typing')?.classList.add('hidden');
 }
 
 function clearAgentResponseTimer(agent) {
@@ -629,7 +673,7 @@ function buildAgentCard(agent) {
   const card = document.createElement('div');
   card.className = `agent-card status-${agent.status}`;
   card.dataset.id = agent.id;
-  if (state.openPanels.includes(agent.id)) card.classList.add('active');
+  if (state.openTiles.includes(agent.id)) card.classList.add('active');
   const color = AGENT_COLORS[agent.type] || AGENT_COLORS.generic;
   card.style.setProperty('--agent-color', color);
 
@@ -662,10 +706,10 @@ function buildAgentCard(agent) {
     </div>
   `;
 
-  card.querySelector('.btn-chat')?.addEventListener('click', e => { e.stopPropagation(); openPanel(agent.id); });
+  card.querySelector('.btn-chat')?.addEventListener('click', e => { e.stopPropagation(); openTile(agent.id); });
   card.querySelector('.btn-ping')?.addEventListener('click', e => { e.stopPropagation(); pingAgent(agent.id); });
   card.querySelector('.btn-remove')?.addEventListener('click', e => { e.stopPropagation(); removeAgent(agent.id); });
-  card.addEventListener('click', () => openPanel(agent.id));
+  card.addEventListener('click', () => openTile(agent.id));
   return card;
 }
 
@@ -680,11 +724,11 @@ function renderTabs() {
   el.agentTabsBar.innerHTML = '';
   for (const agent of uniqueAgentsForDisplay([...state.agents.values()])) {
     const tab = document.createElement('div');
-    const isOpen = state.openPanels.includes(agent.id);
+    const isOpen = state.openTiles.includes(agent.id);
     tab.className = `chat-tab${isOpen ? ' active' : ''}`;
     tab.dataset.id = agent.id;
     tab.innerHTML = `<span class="tab-dot"></span>${escHtml(getAgentDisplayName(agent))}`;
-    tab.addEventListener('click', () => openPanel(agent.id));
+    tab.addEventListener('click', () => openTile(agent.id));
     el.agentTabsBar.appendChild(tab);
   }
 }
@@ -710,13 +754,12 @@ function setActiveAgent(id) {
   const statusLabel = agent.status === 'online' ? 'READY' : agent.status.toUpperCase();
   const displayName = getAgentDisplayName(agent);
   el.activeAgentLabel.textContent = `${displayName.toUpperCase()} — ${statusLabel}`;
-  el.chatInput.placeholder = `שלח הנחיה אל ${displayName}...`;
 
   el.detailTabs.querySelectorAll('.detail-tab').forEach(t => t.classList.toggle('active', t.dataset.id === id));
-  el.agentList.querySelectorAll('.agent-card').forEach(c => c.classList.toggle('active', state.openPanels.includes(c.dataset.id)));
+  el.agentList.querySelectorAll('.agent-card').forEach(c => c.classList.toggle('active', state.openTiles.includes(c.dataset.id)));
 
-  el.panelsWorkspace.querySelectorAll('.chat-panel').forEach(p => {
-    p.classList.toggle('panel-active', p.dataset.panelAgent === id);
+  el.tilesWorkspace.querySelectorAll('.agent-tile').forEach(t => {
+    t.classList.toggle('tile-active', t.dataset.tileAgent === id);
   });
 
   updateDetailContent();
@@ -1000,7 +1043,6 @@ function setTextDirection(dir) {
   document.body.classList.toggle('text-dir-rtl', state.display.textDir === 'rtl');
   document.body.classList.toggle('text-dir-ltr', state.display.textDir === 'ltr');
   document.body.classList.toggle('text-dir-auto', state.display.textDir === 'auto');
-  applyDirectionToNode(el.chatInput);
   document.querySelectorAll('.msg-bubble, #prp-content').forEach(applyDirectionToNode);
   ['rtl', 'ltr', 'auto'].forEach(mode => {
     document.getElementById(`btn-dir-${mode}`)?.classList.toggle('active', state.display.textDir === mode);
@@ -1020,72 +1062,59 @@ function initDisplayControls() {
 
 initDisplayControls();
 
-// ── Global input bar (forwards to active panel or broadcasts) ──────
-el.chatInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    _globalSendOrBroadcast();
-  }
-});
-el.chatInput.addEventListener('input', () => {
-  el.chatInput.style.height = 'auto';
-  el.chatInput.style.height = Math.min(el.chatInput.scrollHeight, 88) + 'px';
-  setBtnSend(!!el.chatInput.value.trim());
-});
-el.btnSend.addEventListener('click', _globalSendOrBroadcast);
-
-function _globalSendOrBroadcast() {
-  const text = el.chatInput.value.trim();
+// ── Broadcast & Clear ──────────────────────────────────────────────
+$('btn-broadcast').addEventListener('click', () => {
+  const text = prompt('Broadcast message to all open tiles:');
   if (!text) return;
-  if (state.activeAgentId && state.openPanels.includes(state.activeAgentId)) {
-    const panel = getPanelEl(state.activeAgentId);
-    if (panel) {
-      const panelInput = panel.querySelector('.panel-input');
-      if (panelInput) {
-        panelInput.value = text;
-        el.chatInput.value = '';
-        el.chatInput.style.height = 'auto';
-        setBtnSend(false);
-        sendPanelMessage(state.activeAgentId);
-        return;
-      }
-    }
+  for (const agentId of state.openTiles) {
+    const agent = state.agents.get(agentId);
+    if (!agent || agent.streaming) continue;
+    tileAppendMessage(agentId, 'user', text, 'YOU');
+    const chat = state.chats.get(agentId) || [];
+    chat.push({ role: 'user', content: text, ts: Date.now() });
+    state.chats.set(agentId, chat);
+    socket.emit('chat:message', { agentId, message: text });
   }
-}
-
-function setBtnSend(enabled) {
-  el.btnSend.disabled = !enabled;
-}
+  if (state.openTiles.length === 0) {
+    socket.emit('broadcast', { message: text });
+  }
+});
 
 $('btn-clear-chat').addEventListener('click', () => {
   if (state.activeAgentId) socket.emit('chat:clear', { agentId: state.activeAgentId });
 });
 
-$('btn-broadcast').addEventListener('click', () => {
-  const text = el.chatInput.value.trim() || prompt('Broadcast message to all open panels:');
-  if (!text) return;
-  el.chatInput.value = '';
-  el.chatInput.style.height = 'auto';
-  setBtnSend(false);
-  if (state.openPanels.length > 0) {
-    for (const agentId of state.openPanels) {
-      const agent = state.agents.get(agentId);
-      if (!agent || agent.streaming) continue;
-      panelAppendMessage(agentId, 'user', text, 'YOU');
-      const chat = state.chats.get(agentId) || [];
-      chat.push({ role: 'user', content: text, ts: Date.now() });
-      state.chats.set(agentId, chat);
-      socket.emit('chat:message', { agentId, message: text });
-    }
-  } else {
-    socket.emit('broadcast', { message: text });
-  }
-});
-
 // ESC to close zoom
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && state.zoomedPanel) setZoom(state.zoomedPanel, false);
+  if (e.key === 'Escape' && state.zoomedTile) setZoom(state.zoomedTile, false);
 });
+
+// ── Log toggle ─────────────────────────────────────────────────────
+(function initLogToggle() {
+  const logPanel = $('log-panel');
+  const btn = $('btn-toggle-log');
+  if (!btn || !logPanel) return;
+  let open = localStorage.getItem('avagentos.logOpen') !== 'false';
+
+  function applyLogState() {
+    if (open) {
+      logPanel.classList.remove('log-collapsed');
+      btn.textContent = '◀';
+      btn.title = 'Collapse log';
+    } else {
+      logPanel.classList.add('log-collapsed');
+      btn.textContent = '▶';
+      btn.title = 'Expand log';
+    }
+    localStorage.setItem('avagentos.logOpen', String(open));
+  }
+
+  btn.addEventListener('click', () => {
+    open = !open;
+    applyLogState();
+  });
+  applyLogState();
+})();
 
 // Log filters
 document.querySelectorAll('.lf-btn').forEach(btn => {
@@ -1238,20 +1267,6 @@ socket.on('memory:note-content', ({ relPath, content }) => {
   openNoteEditor(relPath, content || '');
 });
 
-socket.on('memory:save-result', ({ ok }) => {
-  const btn = $('btn-save-memory');
-  if (!btn) return;
-  btn.classList.remove('saving');
-  if (ok) {
-    btn.classList.add('saved');
-    btn.textContent = '✓';
-    setTimeout(() => { btn.classList.remove('saved'); btn.textContent = '💾'; }, 2000);
-    addLog('Conversation saved to Obsidian', 'success');
-  } else {
-    addLog('Memory not configured — set OBSIDIAN_VAULT_PATH in .env', 'warning');
-  }
-});
-
 function renderMemoryNotes(notes) {
   const list = $('memory-notes-list');
   if (!list) return;
@@ -1288,12 +1303,6 @@ $('btn-memory-sync').addEventListener('click', e => {
   e.stopPropagation();
   socket.emit('memory:sync');
   addLog('Syncing Obsidian vault...', 'info');
-});
-
-$('btn-save-memory').addEventListener('click', () => {
-  const btn = $('btn-save-memory');
-  btn.classList.add('saving');
-  socket.emit('memory:save-chat', { agentId: state.activeAgentId });
 });
 
 $('btn-open-note-editor').addEventListener('click', () => openNoteEditor('', ''));
@@ -1565,5 +1574,4 @@ document.getElementById('btn-import-run')?.addEventListener('click', async () =>
 
 // ── Init ───────────────────────────────────────────────────────────
 addLog('AvAgentOS frontend loaded', 'info');
-setBtnSend(false);
-updatePanelGrid(); // Show welcome state
+updateWorkspaceWelcome();
