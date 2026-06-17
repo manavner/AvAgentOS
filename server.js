@@ -98,49 +98,17 @@ function bridgeHostedAgent({ id, name, bridgeId, description, role, riskLevel, c
 const DEFAULT_LOCAL_AGENTS = [
   bridgeHostedAgent({
     id: 'hermes-live',
-    name: 'Hermes Live',
+    name: 'AvnerBF',
     bridgeId: 'hermes-live',
-    description: 'Hermes Dashboard — live WebSocket, streaming, active profile',
-    role: 'main local Hermes agent with streaming responses via WebSocket',
+    description: 'AvnerBF — Hermes agent (Telegram: AvnerBF)',
+    role: 'main local Hermes agent with tools: Telegram, files, memory, web',
     riskLevel: 'write_project',
     capabilities: {
       provider: 'configured-by-active-hermes-profile',
       cost_tier: 'high',
       languages: ['he', 'en'],
-      skills: ['orchestration', 'planning', 'tool-use', 'workspace-tasks'],
+      skills: ['orchestration', 'planning', 'tool-use', 'workspace-tasks', 'streaming'],
       can_stream: true,
-      can_use_tools: true,
-    },
-  }),
-  bridgeHostedAgent({
-    id: 'cheap_buddy',
-    name: 'Cheap Worker',
-    bridgeId: 'cheap_buddy',
-    description: 'Low-cost Hermes worker profile on Deamon-1 (legacy alias: cheapworker)',
-    role: 'cost-efficient worker for simple coding, summaries, and routine tasks',
-    riskLevel: 'write_project',
-    capabilities: {
-      provider: 'openrouter',
-      cost_tier: 'low',
-      languages: ['he', 'en'],
-      skills: ['routine-code', 'summaries', 'tool-use', 'workspace-tasks'],
-      can_stream: false,
-      can_use_tools: true,
-    },
-  }),
-  bridgeHostedAgent({
-    id: 'reviewer',
-    name: 'Reviewer Agent',
-    bridgeId: 'reviewer',
-    description: 'Hermes reviewer profile for code, plans, and risk checks',
-    role: 'read-only code and plan review before commits or higher-risk changes',
-    riskLevel: 'read_only',
-    capabilities: {
-      provider: 'configured-by-hermes-profile',
-      cost_tier: 'medium',
-      languages: ['he', 'en'],
-      skills: ['code-review', 'plan-review', 'security-review', 'risk-checks'],
-      can_stream: false,
       can_use_tools: true,
     },
   }),
@@ -937,6 +905,7 @@ async function pingAgent(agentId) {
       if (!agent.model) agent.model = data.data[0].id;
       agent.description = `LM Studio — ${data.data.map(m => m.id).join(', ')}`;
     }
+    agent.lastSeenOnline = Date.now();
     io.emit('agent:status', { id: agentId, status: agent.status, latency });
     return latency;
   } catch {
@@ -1007,6 +976,25 @@ setInterval(() => {
     if (!agent.builtIn || agent.type === 'ollama' || agent.type === 'lmstudio') pingAgent(id);
   }
 }, 30000);
+
+// ── TTL cleanup — remove non-builtIn agents offline > 24h ────────
+const AGENT_TTL_MS = 24 * 60 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, agent] of agents) {
+    if (agent.builtIn) continue;
+    if (agent.status === 'offline' || agent.status === 'error') {
+      const lastSeen = agent.lastSeenOnline || agent.connectedAt || 0;
+      if (now - lastSeen > AGENT_TTL_MS) {
+        agents.delete(id);
+        histories.delete(id);
+        saveAgents();
+        io.emit('agent:removed', { id });
+        syslog(`Agent "${agent.name}" removed — offline > 24h (TTL)`, 'warning');
+      }
+    }
+  }
+}, 60 * 60 * 1000); // check every hour
 
 function syslog(message, level = 'info') {
   io.emit('system:log', { message, level, ts: new Date().toISOString() });

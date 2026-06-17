@@ -87,11 +87,8 @@ socket.on('state:init', ({ agents, hasClaudeKey }) => {
   renderDetailTabs();
   updateMetrics();
 
-  // Auto-open tiles for all online agents (up to 6)
-  const onlineAgents = [...state.agents.values()].filter(a =>
-    a.status === 'online' || a.status === 'no-key'
-  );
-  const toOpen = uniqueAgentsForDisplay(onlineAgents).slice(0, 6);
+  // Auto-open tiles for all known agents (online or offline)
+  const toOpen = uniqueAgentsForDisplay([...state.agents.values()]).slice(0, 8);
   for (const agent of toOpen) openTile(agent.id);
 
   // If nothing opened, open default
