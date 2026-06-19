@@ -66,13 +66,13 @@ const histories = new Map();
 const DEFAULT_BRIDGE_HOST = process.env.HERMES_BRIDGE_HOST || '127.0.0.1';
 const DEFAULT_BRIDGE_PORT = Number(process.env.HERMES_BRIDGE_PORT || 8765);
 
-function bridgeHostedAgent({ id, name, bridgeId, description, role, riskLevel, capabilities }) {
+function bridgeHostedAgent({ id, name, bridgeId, description, role, riskLevel, capabilities, host, port }) {
   return {
     id,
     name,
     type: 'hermes',
-    host: DEFAULT_BRIDGE_HOST,
-    port: DEFAULT_BRIDGE_PORT,
+    host: host || DEFAULT_BRIDGE_HOST,
+    port: port || DEFAULT_BRIDGE_PORT,
     apiKey: null,
     config: {
       format: 'openai',
@@ -95,13 +95,171 @@ function bridgeHostedAgent({ id, name, bridgeId, description, role, riskLevel, c
   };
 }
 
+const AVNERAI_BRIDGE_HOST = '192.168.178.118';
+const AVNERAI_BRIDGE_PORT = 8765;
+
+const MACHINE3_BRIDGE_HOST = '192.168.178.107';
+const MACHINE3_BRIDGE_PORT = 8765;
+
 const DEFAULT_LOCAL_AGENTS = [
+  // ── AvnerBF — Primary Orchestrator ───────────────────────────────
+  {
+    ...bridgeHostedAgent({
+      id: 'hermes-live',
+      name: 'AvnerBF',
+      bridgeId: 'hermes-live',
+      description: 'AvnerBF — ראשי | מתאם סוכנים, כלים, זיכרון, Telegram',
+      role: 'Primary orchestrator — delegates tasks to all other agents',
+      riskLevel: 'write_project',
+      capabilities: {
+        provider: 'configured-by-active-hermes-profile',
+        cost_tier: 'high',
+        languages: ['he', 'en'],
+        skills: ['orchestration', 'planning', 'tool-use', 'workspace-tasks', 'streaming', 'agent-delegation'],
+        can_stream: true,
+        can_use_tools: true,
+      },
+    }),
+    orchestrator: true,
+    sortOrder: 0,
+    orchestratorCapabilities: [
+      {
+        category: 'ניהול משימות',
+        icon: '🎯',
+        items: [
+          {
+            name: 'פירוק משימה',
+            description: 'קבלת משימה מורכבת → פירוק לתת-משימות → שליחה לסוכנים המתאימים',
+            howTo: 'תגיד לי: "פרק את המשימה הבאה ושלח לסוכנים: [תיאור המשימה]"',
+            example: 'פרק: "בנה דוח שבועי" — שלח סיכום לcheap_buddy, ניתוח קוד לAvnerAIBuddy',
+          },
+          {
+            name: 'איסוף תוצאות',
+            description: 'ממתין לתשובות מכל הסוכנים ומסנתז לתשובה אחת מאוחדת',
+            howTo: 'אוטומטי לאחר פירוק משימה',
+            example: 'לאחר שכל הסוכנים סיימו — אני מאחד ומציג תוצאה אחת',
+          },
+        ],
+      },
+      {
+        category: 'ניטור סוכנים',
+        icon: '📡',
+        items: [
+          {
+            name: 'בדיקת זמינות',
+            description: 'בדיקה מי מהסוכנים זמין לפני שליחת משימה',
+            howTo: 'תגיד: "מי זמין עכשיו?" או "תבדוק את כל הסוכנים"',
+            example: 'מציג רשימה של סוכנים ONLINE/OFFLINE ועומס נוכחי',
+          },
+          {
+            name: 'סוכן חלופי',
+            description: 'אם הסוכן המבוקש offline — בוחר אוטומטית חלופה עם יכולות דומות',
+            howTo: 'אוטומטי — לא צריך לעשות כלום',
+            example: 'AvnerAIBuddy offline? → אנסה machine3-hermes במקום',
+          },
+        ],
+      },
+      {
+        category: 'ניהול עלויות',
+        icon: '💰',
+        items: [
+          {
+            name: 'ניתוב חכם לפי עלות',
+            description: 'בחירה אוטומטית של סוכן זול/יקר לפי סוג המשימה',
+            howTo: 'תגיד: "שלח את זה לסוכן הזול ביותר" או "השתמש בסוכן הטוב ביותר"',
+            example: 'סיכום טקסט → cheap_buddy | תכנות מורכב → AvnerBF',
+          },
+          {
+            name: 'דוח עלויות',
+            description: 'הצגת כמה הוצאנו לפי סוכן',
+            howTo: 'תגיד: "תראה לי דוח עלויות" (בפיתוח)',
+            example: 'cheap_buddy: $0.02 | AvnerBF: $0.45 | סה"כ: $0.47',
+          },
+        ],
+      },
+      {
+        category: 'זיכרון משותף',
+        icon: '🧠',
+        items: [
+          {
+            name: 'שמירה ב-Obsidian',
+            description: 'שמירת תוצאות מסוכנים לזיכרון משותף ב-Obsidian',
+            howTo: 'תגיד: "שמור את התוצאה" או "תזכור את מה שאמר AvnerAIBuddy"',
+            example: 'יוצר note ב-Obsidian עם תוצאת הסוכן + timestamp',
+          },
+          {
+            name: 'הקשר לסוכנים',
+            description: 'שליחת הקשר מהזיכרון לסוכן לפני שהוא מתחיל משימה',
+            howTo: 'תגיד: "שלח עם הקשר מהפגישה האחרונה"',
+            example: 'מוסיף context רלוונטי מ-Obsidian לפרומפט של הסוכן',
+          },
+        ],
+      },
+    ],
+  },
+  // ── AvnerAIBuddy (192.168.178.118) ──────────────────────────────
   bridgeHostedAgent({
-    id: 'hermes-live',
-    name: 'AvnerBF',
-    bridgeId: 'hermes-live',
-    description: 'AvnerBF — Hermes agent (Telegram: AvnerBF)',
-    role: 'main local Hermes agent with tools: Telegram, files, memory, web',
+    id: 'avneraiBuddy',
+    name: 'AvnerAIBuddy',
+    bridgeId: 'avneraiBuddy',
+    host: AVNERAI_BRIDGE_HOST,
+    port: AVNERAI_BRIDGE_PORT,
+    description: 'AvnerAIBuddy — Hermes default profile on Deamon-1',
+    role: 'Main Hermes agent on Deamon-1 machine',
+    riskLevel: 'write_project',
+    capabilities: {
+      provider: 'configured-by-hermes-profile',
+      cost_tier: 'high',
+      languages: ['he', 'en'],
+      skills: ['orchestration', 'tool-use', 'workspace-tasks'],
+      can_stream: false,
+      can_use_tools: true,
+    },
+  }),
+  bridgeHostedAgent({
+    id: 'avnerai-cheap',
+    name: 'AvnerAI Cheap',
+    bridgeId: 'cheap_buddy',
+    host: AVNERAI_BRIDGE_HOST,
+    port: AVNERAI_BRIDGE_PORT,
+    description: 'AvnerAIBuddy cheap_buddy profile on Deamon-1',
+    role: 'Low-cost worker on Deamon-1',
+    riskLevel: 'write_project',
+    capabilities: {
+      provider: 'openrouter',
+      cost_tier: 'low',
+      languages: ['he', 'en'],
+      skills: ['routine-code', 'summaries', 'tool-use'],
+      can_stream: false,
+      can_use_tools: true,
+    },
+  }),
+  // ── Machine 3 (192.168.178.107) ──────────────────────────────────
+  bridgeHostedAgent({
+    id: 'machine3-hermes',
+    name: 'Hermes Docker 107',
+    bridgeId: 'hermes-docker-3',
+    host: MACHINE3_BRIDGE_HOST,
+    port: MACHINE3_BRIDGE_PORT,
+    description: 'Hermes Docker on 192.168.178.107',
+    role: 'Hermes agent in Docker on third LAN machine',
+    riskLevel: 'write_project',
+    capabilities: {
+      provider: 'configured-by-active-hermes-profile',
+      cost_tier: 'high',
+      languages: ['he', 'en'],
+      skills: ['orchestration', 'planning', 'tool-use', 'workspace-tasks'],
+      can_stream: false,
+      can_use_tools: true,
+    },
+  }),
+  // ── Local agents ─────────────────────────────────────────────────
+  bridgeHostedAgent({
+    id: 'hermes-docker',
+    name: 'AvnerBF Docker',
+    bridgeId: 'hermes-docker',
+    description: 'AvnerBF Docker — Hermes agent in Docker container',
+    role: 'Hermes agent running in Docker with independent Telegram bot',
     riskLevel: 'write_project',
     capabilities: {
       provider: 'configured-by-active-hermes-profile',
@@ -112,6 +270,54 @@ const DEFAULT_LOCAL_AGENTS = [
       can_use_tools: true,
     },
   }),
+  // ── OpenAI Codex (desktop app) ───────────────────────────────────
+  {
+    id: 'codex',
+    name: 'Codex',
+    type: 'codex',
+    status: 'online',
+    builtIn: true,
+    sortOrder: 2,
+    icon: 'codex',
+    description: 'OpenAI Codex — desktop agent for autonomous coding tasks',
+    role: 'Autonomous coding agent — runs tasks in sandbox, edits files, executes code',
+    bin: 'C:\\Users\\AVNER\\AppData\\Local\\OpenAI\\Codex\\bin\\fb2111b91430cb17\\codex.exe',
+    capabilities: {
+      provider: 'openai',
+      cost_tier: 'high',
+      languages: ['he', 'en'],
+      skills: ['code-editing', 'file-management', 'autonomous-tasks', 'sandboxed-execution', 'debugging'],
+      can_stream: false,
+      can_use_tools: true,
+    },
+    connectedAt: Date.now(),
+    messageCount: 0,
+    latency: null,
+  },
+  // ── Claude Code (this session) ────────────────────────────────────
+  {
+    id: 'claude-code',
+    name: 'Claude Code',
+    type: 'claude-code',
+    status: 'online',
+    builtIn: true,
+    sortOrder: 1,
+    icon: 'claude',
+    description: 'Claude Code CLI — סשן עבודה נוכחי על קוד',
+    role: 'Active coding agent — edits files, runs tests, manages git',
+    capabilities: {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      cost_tier: 'high',
+      languages: ['he', 'en'],
+      skills: ['code-editing', 'file-management', 'git', 'testing', 'debugging', 'refactoring'],
+      can_stream: true,
+      can_use_tools: true,
+    },
+    connectedAt: Date.now(),
+    messageCount: 0,
+    latency: null,
+  },
 ];
 
 function seedDefaultLocalAgents() {
@@ -465,7 +671,7 @@ app.post('/api/projects', (req, res) => {
 app.put('/api/projects/:id', (req, res) => {
   const project = projects.get(req.params.id);
   if (!project) return res.status(404).json({ error: 'Not found' });
-  const allowed = ['name','display_name','assigned_agent_id','phase','status','description','last_agent_response','last_queried_at'];
+  const allowed = ['name','display_name','assigned_agent_id','active_agent_id','phase','status','description','last_agent_response','last_queried_at'];
   for (const key of allowed) {
     if (req.body[key] !== undefined) project[key] = req.body[key];
   }
@@ -501,6 +707,27 @@ app.post('/api/projects/:id/query', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Agent progress reporting ──────────────────────────────────────
+app.post('/api/projects/:id/progress', (req, res) => {
+  const project = projects.get(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Not found' });
+  const { agent_id, message, status, phase } = req.body;
+  if (!message) return res.status(400).json({ error: 'message required' });
+  const now = new Date().toISOString();
+  const entry = { ts: now, agent_id: agent_id || null, message, status: status || null, phase: phase || null };
+  if (!project.activity_log) project.activity_log = [];
+  project.activity_log.unshift(entry);
+  if (project.activity_log.length > 50) project.activity_log.length = 50;
+  if (status) project.status = status;
+  if (phase) project.phase = phase;
+  project.updated_at = now;
+  project.active_agent_id = agent_id || project.active_agent_id || null;
+  saveProjects();
+  syslog(`📋 [${project.display_name || project.name}] ${agents.get(agent_id)?.name || agent_id || 'Agent'}: ${message}`, 'info');
+  io.emit('project:updated', project);
+  res.json({ ok: true, project });
 });
 
 app.post('/api/projects/import-query', async (req, res) => {
@@ -594,6 +821,12 @@ io.on('connection', (socket) => {
   });
   socket.emit('memory:status', memory.getStatus());
   socket.emit('memory:notes', memory.listNotes());
+  // Ping all non-builtin agents so new clients see up-to-date status
+  for (const [id, agent] of agents) {
+    if (!agent.builtIn || agent.type === 'ollama' || agent.type === 'lmstudio') {
+      pingAgent(id);
+    }
+  }
 
   socket.on('chat:message', async ({ agentId, message }) => {
     if (!message?.trim()) return;
@@ -897,6 +1130,7 @@ async function pingAgent(agentId) {
     if (data.agent && !agent.config?.bridgeAgentId) {
       agent.config = { ...(agent.config || {}), bridgeAgentId: data.agent };
     }
+    if (data.hostname) agent.hostname = data.hostname;
     if (agent.type === 'ollama' && Array.isArray(data.models) && data.models.length > 0) {
       if (!agent.model) agent.model = data.models[0].name;
       agent.description = `Ollama — ${data.models.map(m => m.name).join(', ')}`;

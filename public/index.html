@@ -59,6 +59,16 @@
   <div id="projects-view" class="hidden">
     <div id="projects-toolbar">
       <div class="pt-title">📋 PROJECT TRACKER</div>
+      <div class="pt-filters">
+        <label class="pt-filter-label">
+          <input type="checkbox" id="filter-4months" checked>
+          4 חודשים אחרונים
+        </label>
+        <label class="pt-filter-label">
+          <input type="checkbox" id="filter-active-only">
+          פעיל בלבד
+        </label>
+      </div>
       <div class="pt-actions">
         <button class="pt-btn" id="btn-import-projects">⬇ IMPORT FROM HERMES</button>
         <button class="pt-btn primary" id="btn-new-project">+ NEW PROJECT</button>
@@ -68,11 +78,12 @@
       <table id="projects-table">
         <thead>
           <tr>
-            <th>PROJECT</th>
-            <th>AGENT</th>
-            <th>PHASE</th>
-            <th>STATUS</th>
-            <th>UPDATED</th>
+            <th class="sortable" data-sort="name">PROJECT <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="agent">AGENT <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="phase">PHASE <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="status">STATUS <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="updated_at">UPDATED <span class="sort-icon"></span></th>
+            <th>LAST REPORT</th>
             <th>ACTIONS</th>
           </tr>
         </thead>

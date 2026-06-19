@@ -1,6 +1,24 @@
 {
   "agents": [
     {
+      "id": "hermes-docker",
+      "type": "hermes-live",
+      "host": "http://127.0.0.1:9119",
+      "username": "avner",
+      "password": "PxaW3ldx797VeORP6QRGcx96dpFkfo9x",
+      "description": "Hermes Docker — live WebSocket, basic auth",
+      "default_user": "avner",
+      "capabilities": {
+        "provider": "configured-by-active-hermes-profile",
+        "cost_tier": "high",
+        "languages": ["he", "en"],
+        "skills": ["orchestration", "planning", "tool-use", "workspace-tasks", "streaming"],
+        "can_stream": true,
+        "can_use_tools": true,
+        "description": "Hermes Docker agent via WebSocket"
+      }
+    },
+    {
       "id": "hermes-live",
       "type": "hermes-live",
       "host": "http://127.0.0.1:9120",

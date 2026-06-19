@@ -2,24 +2,28 @@
 'use strict';
 
 const AGENT_ICONS = {
-  claude:   '🤖',
-  gemini:   '✦',
-  hermes:   '⚡',
-  openclaw: '🦅',
-  ollama:   '🦙',
-  openai:   '🧠',
-  openrouter:'🧭',
-  generic:  '🔌',
+  claude:       '🤖',
+  'claude-code':'💻',
+  gemini:       '✦',
+  hermes:       '⚡',
+  openclaw:     '🦅',
+  ollama:       '🦙',
+  openai:       '🧠',
+  openrouter:   '🧭',
+  codex:        '🧬',
+  generic:      '🔌',
 };
 const AGENT_COLORS = {
-  claude:   '#00d4ff',
-  gemini:   '#4285f4',
-  hermes:   '#f59e0b',
-  openclaw: '#10b981',
-  ollama:   '#a855f7',
-  openai:   '#22d3ee',
-  openrouter:'#8b5cf6',
-  generic:  '#64748b',
+  claude:       '#00d4ff',
+  'claude-code':'#cc785c',
+  gemini:       '#4285f4',
+  hermes:       '#f59e0b',
+  openclaw:     '#10b981',
+  ollama:       '#a855f7',
+  openai:       '#22d3ee',
+  openrouter:   '#8b5cf6',
+  codex:        '#22c55e',
+  generic:      '#64748b',
 };
 const LLM_TYPES = new Set(['claude', 'gemini', 'openai', 'openrouter', 'ollama', 'lmstudio']);
 
@@ -650,7 +654,7 @@ function clearAgentResponseTimer(agent) {
 // ── Rendering ──────────────────────────────────────────────────────
 function renderAgentList() {
   el.agentList.innerHTML = '';
-  const allAgents = [...state.agents.values()];
+  const allAgents = [...state.agents.values()].sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99));
   const agents = uniqueAgentsForDisplay(allAgents.filter(a => !isLlmAgent(a)));
   const llms = uniqueAgentsForDisplay(allAgents.filter(isLlmAgent));
   appendAgentSection('AGENTS', agents);
@@ -679,12 +683,13 @@ function buildAgentCard(agent) {
   const displayName = getAgentDisplayName(agent);
   const categoryLabel = isLlmAgent(agent) ? 'LLM' : 'AGENT';
   const subtype = agent.type ? agent.type.toUpperCase() : 'GENERIC';
+  const orchestratorBadge = agent.orchestrator ? `<span class="orchestrator-badge">ORCHESTRATOR</span>` : '';
 
   card.innerHTML = `
     <div class="agent-card-top">
       <div class="agent-avatar">${AGENT_ICONS[agent.type] || '🔌'}</div>
       <div class="agent-info">
-        <div class="agent-name">${escHtml(displayName)}</div>
+        <div class="agent-name">${escHtml(displayName)}${orchestratorBadge}</div>
         <div class="agent-type">${categoryLabel} · ${subtype}</div>
       </div>
     </div>
@@ -693,7 +698,7 @@ function buildAgentCard(agent) {
       <span class="agent-status-text">${statusLabel[agent.status] || agent.status.toUpperCase()}</span>
     </div>
     <div class="agent-meta">
-      <span>${escHtml(agent.builtIn ? agent.model || '' : (agent.host ? `${agent.host}:${agent.port}` : ''))}</span>
+      <span>${escHtml(agent.hostname ? `${agent.hostname} · ${agent.host}:${agent.port}` : (agent.builtIn ? agent.model || '' : (agent.host ? `${agent.host}:${agent.port}` : '')))}</span>
       <span class="agent-latency">${latencyStr}</span>
     </div>
     <div class="agent-actions">
@@ -796,7 +801,38 @@ function updateDetailContent() {
       <div class="detail-label">UPTIME</div>
       <div class="detail-value">${uptime}</div>
     </div>
+    ${agent.orchestrator && agent.orchestratorCapabilities ? `
+    <div class="detail-block" style="margin-top:10px">
+      <button class="caps-btn" onclick="showCapabilities()">⚡ CAPABILITIES</button>
+    </div>` : ''}
   `;
+}
+
+function showCapabilities() {
+  const agent = state.agents.get(state.activeAgentId);
+  if (!agent?.orchestratorCapabilities) return;
+  let html = `<div class="caps-modal-overlay" onclick="if(event.target===this)this.remove()">
+    <div class="caps-modal">
+      <div class="caps-modal-header">
+        <span>⚡ ${escHtml(agent.name)} — יכולות</span>
+        <button onclick="this.closest('.caps-modal-overlay').remove()">✕</button>
+      </div>
+      <div class="caps-modal-body">`;
+  for (const cat of agent.orchestratorCapabilities) {
+    html += `<div class="caps-category">
+      <div class="caps-category-title">${cat.icon} ${escHtml(cat.category)}</div>`;
+    for (const item of cat.items) {
+      html += `<div class="caps-item">
+        <div class="caps-item-name">${escHtml(item.name)}</div>
+        <div class="caps-item-desc">${escHtml(item.description)}</div>
+        <div class="caps-item-how"><span class="caps-label">איך:</span> ${escHtml(item.howTo)}</div>
+        <div class="caps-item-example"><span class="caps-label">דוגמה:</span> ${escHtml(item.example)}</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div></div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
 }
 
 // ── Agent Actions ──────────────────────────────────────────────────
@@ -1351,7 +1387,7 @@ viewNav?.querySelectorAll('.view-tab').forEach(btn => {
 });
 
 // ── Projects ───────────────────────────────────────────────────────
-const projState = { projects: [] };
+const projState = { projects: [], sortKey: 'updated_at', sortDir: -1 };
 
 async function loadProjects() {
   const res = await fetch('/api/projects');
@@ -1364,35 +1400,79 @@ function renderProjects() {
   const empty = document.getElementById('projects-empty');
   if (!tbody) return;
   tbody.innerHTML = '';
-  if (!projState.projects.length) {
+
+  const filter4m = document.getElementById('filter-4months')?.checked;
+  const filterActive = document.getElementById('filter-active-only')?.checked;
+  const cutoff4m = Date.now() - 4 * 30 * 24 * 60 * 60 * 1000;
+
+  const sk = projState.sortKey, sd = projState.sortDir;
+  let list = projState.projects.slice().sort((a, b) => {
+    let av = a[sk] ?? '', bv = b[sk] ?? '';
+    if (sk === 'updated_at' || sk === 'created_at') { av = new Date(av||0); bv = new Date(bv||0); }
+    else if (sk === 'agent') { av = state.agents.get(a.assigned_agent_id)?.name||''; bv = state.agents.get(b.assigned_agent_id)?.name||''; }
+    if (av < bv) return -sd; if (av > bv) return sd; return 0;
+  });
+  if (filter4m) list = list.filter(p => p.updated_at && new Date(p.updated_at) >= cutoff4m);
+  if (filterActive) list = list.filter(p => p.status === 'active' || p.status === 'in_progress');
+
+  if (!list.length) {
     empty?.classList.remove('hidden');
     return;
   }
   empty?.classList.add('hidden');
-  for (const p of projState.projects) {
+
+  for (const p of list) {
     const agent = state.agents.get(p.assigned_agent_id);
-    const agentName = agent ? escHtml(agent.name) : '<span style="color:var(--text-muted)">—</span>';
-    const updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString('he-IL') : '—';
+    const activeAgent = state.agents.get(p.active_agent_id);
+    const displayAgent = activeAgent || agent;
+    const isActiveNow = displayAgent && (p.status === 'active' || p.status === 'in_progress') && displayAgent.status === 'online';
+    const agentBadge = displayAgent
+      ? `<div class="proj-agent-row">
+           ${isActiveNow ? '<span class="proj-active-dot"></span>' : ''}
+           <span class="proj-agent-name ${displayAgent.status === 'online' ? 'agent-online' : 'agent-offline'}">${escHtml(displayAgent.name)}</span>
+         </div>`
+      : '<span style="color:var(--text-dim)">—</span>';
+    const updated = p.updated_at ? relativeTime(new Date(p.updated_at)) : '—';
+    const lastReport = p.activity_log?.[0]
+      ? `<div class="proj-last-report" title="${escHtml(p.activity_log[0].message)}">${escHtml(p.activity_log[0].message.slice(0, 50))}${p.activity_log[0].message.length > 50 ? '…' : ''}<div class="proj-report-ts">${relativeTime(new Date(p.activity_log[0].ts))}</div></div>`
+      : '<span style="color:var(--text-dim)">—</span>';
     const statusClass = { active: 'status-active', in_progress: 'status-inprog', blocked: 'status-blocked', done: 'status-done', archived: 'status-archived' }[p.status] || '';
     const tr = document.createElement('tr');
     tr.dataset.id = p.id;
+    if (isActiveNow) tr.classList.add('proj-row-active');
     tr.innerHTML = `
       <td><div class="proj-name">${escHtml(p.display_name || p.name)}</div><div class="proj-id">${escHtml(p.name)}</div></td>
-      <td>${agentName}</td>
+      <td>${agentBadge}</td>
       <td><span class="proj-phase">${escHtml(p.phase || '—')}</span></td>
       <td><span class="proj-status ${statusClass}">${escHtml(p.status || '—')}</span></td>
-      <td>${updated}</td>
+      <td class="proj-updated">${updated}</td>
+      <td class="proj-report-cell">${lastReport}</td>
       <td class="proj-actions">
         <button class="proj-btn btn-ask" data-id="${p.id}" title="שאל את הסוכן">🔄 Ask</button>
+        <button class="proj-btn btn-set-active" data-id="${p.id}" title="הגדר סוכן פעיל">⚡</button>
         <button class="proj-btn btn-edit" data-id="${p.id}" title="ערוך">✏️</button>
         <button class="proj-btn btn-del danger" data-id="${p.id}" title="מחק">✕</button>
       </td>
     `;
     tr.querySelector('.btn-ask').addEventListener('click', () => askAgent(p.id));
+    tr.querySelector('.btn-set-active').addEventListener('click', () => setActiveAgent(p.id));
     tr.querySelector('.btn-edit').addEventListener('click', () => openProjectModal(p));
     tr.querySelector('.btn-del').addEventListener('click', () => deleteProject(p.id));
     tbody.appendChild(tr);
   }
+}
+
+function relativeTime(date) {
+  const diff = Date.now() - date.getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'עכשיו';
+  if (m < 60) return `לפני ${m} דק'`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `לפני ${h} שע'`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `לפני ${d} ימים`;
+  const mo = Math.floor(d / 30);
+  return `לפני ${mo} חודשים`;
 }
 
 async function askAgent(projectId) {
@@ -1429,6 +1509,41 @@ function showResponsePanel(title, content) {
 document.getElementById('btn-prp-close')?.addEventListener('click', () => {
   document.getElementById('project-response-panel')?.classList.add('hidden');
 });
+
+async function setActiveAgent(projectId) {
+  const p = projState.projects.find(x => x.id === projectId);
+  if (!p) return;
+  const agentList = [...state.agents.values()].filter(a => !isLlmAgent(a) || a.type === 'claude');
+  let opts = agentList.map(a =>
+    `<option value="${a.id}" ${a.id === (p.active_agent_id || p.assigned_agent_id) ? 'selected' : ''}>${escHtml(a.name)} (${a.status})</option>`
+  ).join('');
+  const html = `<div class="caps-modal-overlay" id="set-active-overlay" onclick="if(event.target.id==='set-active-overlay')this.remove()">
+    <div class="caps-modal" style="width:340px">
+      <div class="caps-modal-header"><span>⚡ סוכן פעיל — ${escHtml(p.display_name||p.name)}</span><button onclick="document.getElementById('set-active-overlay').remove()">✕</button></div>
+      <div class="caps-modal-body" style="gap:12px">
+        <div style="font-size:12px;color:var(--text-dim)">בחר את הסוכן שעובד עכשיו על הפרויקט:</div>
+        <select id="sel-active-agent" style="width:100%;background:var(--bg-input,#1a1a2e);color:var(--text-bright);border:1px solid var(--border);border-radius:5px;padding:7px 10px;font-size:12px">${opts}</select>
+        <button onclick="confirmSetActive('${projectId}')" style="width:100%;padding:8px;background:rgba(0,212,255,0.1);border:1px solid var(--cyan);border-radius:5px;color:var(--cyan);font-weight:700;cursor:pointer;font-size:12px">אישור</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+async function confirmSetActive(projectId) {
+  const agentId = document.getElementById('sel-active-agent')?.value;
+  if (!agentId) return;
+  const res = await fetch(`/api/projects/${projectId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active_agent_id: agentId }),
+  });
+  const proj = await res.json();
+  const idx = projState.projects.findIndex(p => p.id === projectId);
+  if (idx >= 0) projState.projects[idx] = proj;
+  document.getElementById('set-active-overlay')?.remove();
+  renderProjects();
+}
 
 async function deleteProject(id) {
   const p = projState.projects.find(x => x.id === id);
@@ -1467,6 +1582,39 @@ function closeProjectModal() {
 }
 
 document.getElementById('btn-new-project')?.addEventListener('click', () => openProjectModal());
+document.getElementById('filter-4months')?.addEventListener('change', renderProjects);
+document.getElementById('filter-active-only')?.addEventListener('change', renderProjects);
+
+document.querySelectorAll('#projects-table th.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.sort;
+    if (projState.sortKey === key) projState.sortDir *= -1;
+    else { projState.sortKey = key; projState.sortDir = 1; }
+    updateSortIcons();
+    renderProjects();
+  });
+});
+
+function updateSortIcons() {
+  document.querySelectorAll('#projects-table th.sortable').forEach(th => {
+    const icon = th.querySelector('.sort-icon');
+    if (!icon) return;
+    if (th.dataset.sort === projState.sortKey) {
+      icon.textContent = projState.sortDir === 1 ? ' ▲' : ' ▼';
+      th.classList.add('sort-active');
+    } else {
+      icon.textContent = '';
+      th.classList.remove('sort-active');
+    }
+  });
+}
+updateSortIcons();
+
+socket.on('project:updated', (project) => {
+  const idx = projState.projects.findIndex(p => p.id === project.id);
+  if (idx >= 0) projState.projects[idx] = project; else projState.projects.push(project);
+  renderProjects();
+});
 document.getElementById('btn-project-modal-close')?.addEventListener('click', closeProjectModal);
 document.getElementById('btn-project-cancel')?.addEventListener('click', closeProjectModal);
 document.getElementById('modal-project')?.addEventListener('click', e => { if (e.target.id === 'modal-project') closeProjectModal(); });

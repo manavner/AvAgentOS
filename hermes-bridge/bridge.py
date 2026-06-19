@@ -31,7 +31,8 @@ PORT        = int(os.getenv("PORT",    "8765"))
 TIMEOUT     = int(os.getenv("TIMEOUT", "180"))
 SILENCE     = float(os.getenv("SILENCE", "3.0"))
 HERMES_BIN  = os.getenv("HERMES_BIN",  "/opt/hermes/.venv/bin/hermes")
-CONFIG_FILE = Path(os.getenv("AGENTS_CONFIG", "agents_config.json"))
+_HERE = Path(__file__).parent
+CONFIG_FILE = Path(os.getenv("AGENTS_CONFIG", _HERE / "agents_config.json"))
 
 # ── App ───────────────────────────────────────────────────────────
 app = FastAPI(title="Hermes Multi-Agent Bridge", version="3.0.0")
@@ -283,10 +284,15 @@ def call_hermes(agent_id: str, message: str, user: str = None) -> str:
     return "\n".join(lines) if lines else "(no response)"
 
 # ── Hermes-Live: WebSocket JSON-RPC to Dashboard ─────────────────
-def _hermes_live_token(host: str) -> str:
+def _hermes_live_token(host: str, username: str = None, password: str = None) -> str:
     """Fetch the session token injected into the Dashboard HTML."""
+    import base64
     try:
-        with urllib.request.urlopen(f"{host}/", timeout=4) as r:
+        req = urllib.request.Request(f"{host}/")
+        if username and password:
+            creds = base64.b64encode(f"{username}:{password}".encode()).decode()
+            req.add_header("Authorization", f"Basic {creds}")
+        with urllib.request.urlopen(req, timeout=4) as r:
             html = r.read().decode("utf-8", errors="replace")
         m = re.search(r'__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"', html)
         return m.group(1) if m else ""
@@ -297,20 +303,29 @@ def _hermes_live_token(host: str) -> str:
 def call_hermes_live(agent: dict, message: str, user: str = None) -> str:
     """Send a message to the running Hermes Dashboard via WebSocket JSON-RPC."""
     import websockets.sync.client as _wsc
+    import base64
 
     host = agent.get("host", "http://127.0.0.1:9120").rstrip("/")
     ws_host = host.replace("http://", "ws://").replace("https://", "wss://")
-    token = _hermes_live_token(host)
+    username = agent.get("username")
+    password = agent.get("password")
+    token = _hermes_live_token(host, username, password)
 
     ws_url = f"{ws_host}/api/ws"
     if token:
         ws_url += f"?token={token}"
 
+    # Basic auth header for WebSocket handshake
+    extra_headers = {}
+    if username and password:
+        creds = base64.b64encode(f"{username}:{password}".encode()).decode()
+        extra_headers["Authorization"] = f"Basic {creds}"
+
     timeout = agent.get("timeout", TIMEOUT)
     collected: list[str] = []
 
     try:
-        with _wsc.connect(ws_url, open_timeout=6) as ws:
+        with _wsc.connect(ws_url, open_timeout=6, additional_headers=extra_headers) as ws:
             rid = uuid.uuid4().hex[:8]
 
             # ── create a fresh session ────────────────────────────
@@ -477,13 +492,16 @@ def reload():
 @app.get("/health")
 @app.get("/api/status")
 def health():
+    import socket
     with _lock:
         keys = list(_agents.keys())
     return {"status": "ok", "service": "hermes-multi-bridge",
-            "version": "3.0.0", "agents": keys}
+            "version": "3.0.0", "agents": keys,
+            "hostname": socket.gethostname()}
 
 @app.get("/agent/{agent_id}/health")
 def agent_health(agent_id: str):
+    import socket
     with _lock:
         agent = _agents.get(agent_id)
     if not agent:
@@ -493,6 +511,7 @@ def agent_health(agent_id: str):
         "agent": agent_id,
         "name": agent.get("description") or agent_id,
         "version": "3.0.0",
+        "hostname": socket.gethostname(),
         "capabilities": agent.get("capabilities", {}),
         "config": agent,
     }
