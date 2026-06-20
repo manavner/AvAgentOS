@@ -29,7 +29,7 @@ if str(_WS_DEPS) not in sys.path:
 # ── Config ────────────────────────────────────────────────────────
 PORT        = int(os.getenv("PORT",    "8765"))
 TIMEOUT     = int(os.getenv("TIMEOUT", "180"))
-SILENCE     = float(os.getenv("SILENCE", "3.0"))
+SILENCE     = float(os.getenv("SILENCE", "15.0"))
 HERMES_BIN  = os.getenv("HERMES_BIN",  "/opt/hermes/.venv/bin/hermes")
 _HERE = Path(__file__).parent
 CONFIG_FILE = Path(os.getenv("AGENTS_CONFIG", _HERE / "agents_config.json"))
@@ -325,7 +325,7 @@ def call_hermes_live(agent: dict, message: str, user: str = None) -> str:
     collected: list[str] = []
 
     try:
-        with _wsc.connect(ws_url, open_timeout=6, additional_headers=extra_headers) as ws:
+        with _wsc.connect(ws_url, open_timeout=20, additional_headers=extra_headers) as ws:
             rid = uuid.uuid4().hex[:8]
 
             # ── create a fresh session ────────────────────────────

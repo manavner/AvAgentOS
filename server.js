@@ -10,8 +10,34 @@ const fetch = require('node-fetch');
 const ObsidianMemory = require('./memory');
 require('dotenv').config();
 
-const AGENTS_FILE   = path.join(__dirname, 'agents.json');
-const PROJECTS_FILE = path.join(__dirname, 'projects.json');
+const AGENTS_FILE    = path.join(__dirname, 'agents.json');
+const PROJECTS_FILE  = path.join(__dirname, 'projects.json');
+const HISTORIES_DIR  = path.join(__dirname, 'data', 'histories');
+
+// ── History persistence ───────────────────────────────────────────
+if (!fs.existsSync(HISTORIES_DIR)) fs.mkdirSync(HISTORIES_DIR, { recursive: true });
+
+function historyFile(agentId) {
+  return path.join(HISTORIES_DIR, `${agentId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
+}
+
+function saveHistory(agentId) {
+  try {
+    const hist = histories.get(agentId);
+    if (hist) fs.writeFileSync(historyFile(agentId), JSON.stringify(hist, null, 2));
+  } catch (e) { /* non-fatal */ }
+}
+
+function loadHistory(agentId) {
+  try {
+    const f = historyFile(agentId);
+    if (fs.existsSync(f)) {
+      const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+      if (Array.isArray(data)) return data;
+    }
+  } catch (e) { /* non-fatal */ }
+  return [];
+}
 
 // ── Projects store ────────────────────────────────────────────────
 const projects = new Map(); // id → project
@@ -43,7 +69,7 @@ function loadAgents() {
     for (const agent of saved) {
       agent.status = 'connecting';
       agents.set(agent.id, agent);
-      histories.set(agent.id, []);
+      histories.set(agent.id, loadHistory(agent.id));
     }
     console.log(`  ✓ Loaded ${saved.length} saved agent(s)`);
   } catch (e) {
@@ -324,7 +350,7 @@ function seedDefaultLocalAgents() {
   for (const agent of DEFAULT_LOCAL_AGENTS) {
     if (agents.has(agent.id)) continue;
     agents.set(agent.id, { ...agent, connectedAt: Date.now() });
-    histories.set(agent.id, []);
+    histories.set(agent.id, loadHistory(agent.id));
   }
 }
 
@@ -382,7 +408,7 @@ if (process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_o
     messageCount: 0,
     latency: null,
   });
-  histories.set('openrouter', []);
+  histories.set('openrouter', loadHistory('openrouter'));
 }
 
 // ── Built-in Agents ───────────────────────────────────────────────
@@ -399,7 +425,7 @@ agents.set('claude', {
   messageCount: 0,
   latency: null,
 });
-histories.set('claude', []);
+histories.set('claude', loadHistory('claude'));
 
 agents.set('gemini', {
   id: 'gemini',
@@ -414,7 +440,7 @@ agents.set('gemini', {
   messageCount: 0,
   latency: null,
 });
-histories.set('gemini', []);
+histories.set('gemini', loadHistory('gemini'));
 
 agents.set('ollama', {
   id: 'ollama',
@@ -436,7 +462,7 @@ agents.set('ollama', {
     healthEndpoint: '/api/tags',
   },
 });
-histories.set('ollama', []);
+histories.set('ollama', loadHistory('ollama'));
 
 agents.set('lmstudio', {
   id: 'lmstudio',
@@ -458,7 +484,7 @@ agents.set('lmstudio', {
     healthEndpoint: '/v1/models',
   },
 });
-histories.set('lmstudio', []);
+histories.set('lmstudio', loadHistory('lmstudio'));
 
 seedDefaultLocalAgents();
 
@@ -493,7 +519,7 @@ app.post('/api/agents', async (req, res) => {
   };
 
   agents.set(id, agent);
-  histories.set(id, []);
+  histories.set(id, loadHistory(id));
 
   pingAgent(id).then(ok => {
     agent.status = ok !== false ? 'online' : 'offline';
@@ -606,7 +632,7 @@ app.post('/api/onboard', async (req, res) => {
   };
 
   agents.set(agentId, agent);
-  histories.set(agentId, []);
+  histories.set(agentId, loadHistory(agentId));
   saveAgents();
   io.emit('agent:added', agent);
   syslog(`⚡ Onboarding "${agentName}" @ ${ip}`, 'info');
@@ -772,7 +798,7 @@ function buildEnvelope(sessionContext = {}) {
 
 // ── Direct agent call (for REST endpoints) ────────────────────────
 async function callAgentDirect(agent, userMessage, sessionContext = {}) {
-  const baseUrl = agent.host.startsWith('http')
+  const baseUrl = agent.host?.startsWith('http')
     ? agent.host.replace(/\/$/, '')
     : `http://${agent.host}:${agent.port}`;
   const defaultEndpoint = (agent.type === 'hermes' || agent.type === 'openrouter')
@@ -832,7 +858,12 @@ io.on('connection', (socket) => {
     if (!message?.trim()) return;
     const agent = agents.get(agentId);
     if (!agent) return socket.emit('chat:error', { agentId, error: 'Agent not found' });
-    if (agent.type === 'claude') {
+    if (agent.type === 'claude-code') {
+      await handleClaudeCode(socket, message);
+    } else if (agent.type === 'codex') {
+      socket.emit('chat:stream:start', { agentId });
+      socket.emit('chat:stream:end', { agentId, fullText: '🧬 Codex הוא סוכן קוד עצמאי — פתח את אפליקציית Codex ישירות לצ\'אט.' });
+    } else if (agent.type === 'claude') {
       await handleClaude(socket, message);
     } else if (agent.type === 'gemini') {
       await handleGemini(socket, message);
@@ -848,7 +879,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('chat:clear', ({ agentId }) => {
-    if (histories.has(agentId)) histories.set(agentId, []);
+    if (histories.has(agentId)) {
+      histories.set(agentId, []);
+      saveHistory(agentId);
+    }
     socket.emit('chat:cleared', { agentId });
   });
 
@@ -911,16 +945,63 @@ io.on('connection', (socket) => {
   });
 });
 
+// ── Claude Code Handler (spawns claude -p) ───────────────────────
+async function handleClaudeCode(socket, userMessage) {
+  const agentId = 'claude-code';
+  const history = histories.get(agentId) || [];
+  history.push({ role: 'user', content: userMessage });
+  socket.emit('chat:stream:start', { agentId });
+
+  const { spawn } = require('child_process');
+  // Build conversation context as a single prompt with history prefix
+  const contextLines = history.slice(-10, -1).map(m =>
+    `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`
+  ).join('\n');
+  const fullPrompt = contextLines
+    ? `${contextLines}\nUser: ${userMessage}`
+    : userMessage;
+
+  let full = '';
+  try {
+    await new Promise((resolve, reject) => {
+      const proc = spawn('claude', ['-p', fullPrompt, '--output-format', 'text'], {
+        shell: true, env: process.env,
+      });
+      proc.stdout.on('data', chunk => {
+        const text = chunk.toString();
+        full += text;
+        socket.emit('chat:stream:delta', { agentId, delta: text });
+      });
+      proc.stderr.on('data', chunk => {
+        const msg = chunk.toString().trim();
+        if (msg) syslog(`claude-code stderr: ${msg}`, 'warning');
+      });
+      proc.on('close', code => code === 0 ? resolve() : reject(new Error(`claude exited with code ${code}`)));
+      proc.on('error', reject);
+    });
+    history.push({ role: 'assistant', content: full });
+    if (history.length > 20) history.splice(0, 2);
+    histories.set(agentId, history);
+    saveHistory(agentId);
+    socket.emit('chat:stream:end', { agentId, fullText: full });
+    syslog(`Claude Code responded (${full.length} chars)`, 'success');
+  } catch (err) {
+    socket.emit('chat:error', { agentId, error: err.message });
+    syslog(`Claude Code error: ${err.message}`, 'error');
+    history.pop();
+  }
+}
+
 // ── Claude Handler ───────────────────────────────────────────────
-async function handleClaude(socket, userMessage) {
+async function handleClaude(socket, userMessage, agentId = 'claude') {
   if (!claudeClient) {
-    return socket.emit('chat:error', { agentId: 'claude', error: 'ANTHROPIC_API_KEY not set in .env' });
+    return socket.emit('chat:error', { agentId, error: 'ANTHROPIC_API_KEY not set in .env' });
   }
   const agent = agents.get('claude');
-  const history = histories.get('claude');
+  const history = histories.get(agentId) || histories.get('claude');
   history.push({ role: 'user', content: userMessage });
   agent.messageCount++;
-  socket.emit('chat:stream:start', { agentId: 'claude' });
+  socket.emit('chat:stream:start', { agentId });
 
   try {
     let full = '';
@@ -936,15 +1017,16 @@ async function handleClaude(socket, userMessage) {
     for await (const ev of stream) {
       if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
         full += ev.delta.text;
-        socket.emit('chat:stream:delta', { agentId: 'claude', delta: ev.delta.text });
+        socket.emit('chat:stream:delta', { agentId, delta: ev.delta.text });
       }
     }
     history.push({ role: 'assistant', content: full });
     if (history.length > 50) history.splice(0, 2);
-    socket.emit('chat:stream:end', { agentId: 'claude', fullText: full });
+    saveHistory(agentId);
+    socket.emit('chat:stream:end', { agentId, fullText: full });
     syslog(`Claude responded (${full.length} chars)`, 'success');
   } catch (err) {
-    socket.emit('chat:error', { agentId: 'claude', error: err.message });
+    socket.emit('chat:error', { agentId, error: err.message });
     syslog(`Claude error: ${err.message}`, 'error');
     history.pop();
   }
@@ -992,7 +1074,7 @@ async function handleGemini(socket, userMessage) {
     history.push({ role: 'user', content: userMessage });
     history.push({ role: 'assistant', content: full });
     if (history.length > 50) history.splice(0, 2);
-
+    saveHistory('gemini');
     socket.emit('chat:stream:end', { agentId: 'gemini', fullText: full });
     syslog(`Gemini responded (${full.length} chars)`, 'success');
   } catch (err) {
@@ -1036,6 +1118,10 @@ async function handleHermesTelegram(socket, agentId, userMessage) {
 // ── Agent Handler ────────────────────────────────────────────────
 async function handleAgent(socket, agentId, userMessage) {
   const agent = agents.get(agentId);
+  if (!agent?.host) {
+    socket.emit('chat:error', { agentId, error: `Agent "${agentId}" has no network endpoint configured.` });
+    return;
+  }
   const history = histories.get(agentId) || [];
   history.push({ role: 'user', content: userMessage });
   agent.messageCount++;
@@ -1043,7 +1129,7 @@ async function handleAgent(socket, agentId, userMessage) {
 
   try {
     // Support full URLs (https://openrouter.ai) or host:port (192.168.1.1:8080)
-    const baseUrl = agent.host.startsWith('http')
+    const baseUrl = agent.host?.startsWith('http')
       ? agent.host.replace(/\/$/, '')
       : `http://${agent.host}:${agent.port}`;
     // hermes-dashboard and openrouter use /api/v1/..., most others use /v1/...
@@ -1092,7 +1178,7 @@ async function handleAgent(socket, agentId, userMessage) {
 
     history.push({ role: 'assistant', content: text });
     if (history.length > 50) history.splice(0, 2);
-
+    saveHistory(agentId);
     socket.emit('chat:stream:end', { agentId, fullText: text });
     syslog(`${agent.name} responded (${text.length} chars)`, 'success');
   } catch (err) {
